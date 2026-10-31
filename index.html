@@ -728,14 +728,18 @@
 
     function splitFrameValue(rawValue) {
       const raw = String(rawValue ?? '').trim();
-      if (!raw) return { sign: '+', value: '' };
+      if (!raw) return { sign: '', value: '' };
       const match = raw.match(/^([+-])(.*)$/);
-      return match ? { sign: match[1], value: match[2] } : { sign: '+', value: raw };
+      return match ? { sign: match[1], value: match[2] } : { sign: '', value: raw };
     }
 
     function FrameInput({ label, name, value, onChange }) {
       const parsed = splitFrameValue(value);
-      const setSign = (sign) => onChange(name, `${sign}${parsed.value}`);
+      // Clicking the currently selected sign again clears the sign.
+      const setSign = (sign) => {
+        const nextSign = parsed.sign === sign ? '' : sign;
+        onChange(name, `${nextSign}${parsed.value}`);
+      };
       const setNumber = (nextValue) => onChange(name, nextValue === '' ? '' : `${parsed.sign}${nextValue}`);
       return (
         <div className="min-w-0">
@@ -744,6 +748,8 @@
             <div className="flex shrink-0 rounded-md overflow-hidden border border-slate-700">
               {['+', '-'].map(sign => (
                 <button type="button" key={sign} onClick={() => setSign(sign)}
+                  aria-pressed={parsed.sign === sign}
+                  title={parsed.sign === sign ? 'もう一度押すと符号なしになります' : `${sign}を選択`}
                   className={`px-3 py-2 text-sm font-bold ${parsed.sign === sign ? 'bg-cyan-700 text-white' : 'bg-slate-950 text-slate-400 hover:text-white'}`}>{sign}</button>
               ))}
             </div>
