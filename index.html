@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool (Standalone)</title>
+  <title>FG Tool</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -33,7 +33,7 @@
     import { createRoot } from 'react-dom/client';
     import { initializeApp } from 'firebase/app';
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
-    import { getFirestore, collection, onSnapshot, doc, writeBatch } from 'firebase/firestore';
+    import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, addDoc, updateDoc } from 'firebase/firestore';
     import { Book, Shield, Sword, FolderPlus, FilePlus, ChevronRight, ChevronUp, ChevronDown, X, Edit2, Plus, Save, Trash2, GripVertical, Folder, FileText, Pencil, LogOut, Mail, Lock, UserPlus, LogIn } from 'lucide-react';
 
     // --- Firebase Configuration ---
@@ -228,124 +228,50 @@
       const [allFolders, setAllFolders] = useState([]);
       const [allCards, setAllCards] = useState([]);
 
-      // All changes stay in the in-memory draft until the user clicks Save.
-      // A version per document protects newer edits made during a cloud save.
       const [optimistic, setOptimistic] = useState({});
-      const draftRef = useRef(new Map());
+      const pendingWritesRef = useRef(new Map());
       const deletedCardsRef = useRef(new Set());
-      const editVersionRef = useRef(0);
-      const [saving, setSaving] = useState(false);
-      const [saveError, setSaveError] = useState('');
-      const [saveProgress, setSaveProgress] = useState('');
-      const [lastSaveInfo, setLastSaveInfo] = useState(null);
-      const [draftCount, setDraftCount] = useState(0);
-      const savingRef = useRef(false);
-      const refreshDraft = () => {
-        const overlay = {};
-        draftRef.current.forEach((value, key) => { overlay[key] = value; });
-        setOptimistic(overlay);
-        setDraftCount(draftRef.current.size);
-      };
+      const optimisticVersionRef = useRef(0);
       const applyLocalWrite = (name, reference, data, mode = 'set') => {
-        const key = `${name}/${reference.id}`;
-        const prior = draftRef.current.get(key);
+        // A card removed with its memo/folder must not be recreated by a pending editor flush.
         if (name === 'cards') {
           if (mode === 'delete') deletedCardsRef.current.add(reference.id);
           else if (mode === 'set') deletedCardsRef.current.delete(reference.id);
           else if (deletedCardsRef.current.has(reference.id)) return reference.id;
         }
-        const effectiveMode = mode === 'update' && prior?.mode === 'set' ? 'set' : mode;
-        const combined = effectiveMode === 'delete' ? null :
-          (mode === 'update' ? { ...(prior?.data || {}), ...data } : data);
-        // Repeated updates containing the same data do not need another draft.
-        if (prior?.mode === effectiveMode && JSON.stringify(prior.data) === JSON.stringify(combined)) {
-          return reference.id;
-        }
-        draftRef.current.set(key, {
-          version: ++editVersionRef.current, mode: effectiveMode, data: combined
+        const key = `${name}/${reference.id}`;
+        const version = ++optimisticVersionRef.current;
+        setOptimistic(prev => ({ ...prev, [key]: { version, mode, data } }));
+        // Firestore supplies local latency compensation, while this overlay
+        // keeps the change visible even when a tab/character is switched.
+        const previous = pendingWritesRef.current.get(key) || Promise.resolve();
+        const write = previous.catch(() => {}).then(() =>
+          mode === 'delete' ? deleteDoc(reference) :
+          mode === 'update' ? updateDoc(reference, data) : setDoc(reference, data)
+        );
+        pendingWritesRef.current.set(key, write);
+        void write.then(() => {
+          setOptimistic(prev => {
+            if (prev[key]?.version !== version) return prev;
+            const next = { ...prev }; delete next[key]; return next;
+          });
+        }).catch(error => {
+          console.error('Cloud save failed:', name, reference.id, error);
+          setOptimistic(prev => {
+            if (prev[key]?.version !== version) return prev;
+            const next = { ...prev }; delete next[key]; return next;
+          });
+          alert(`クラウドへの保存に失敗しました (${name}): ${error.message}`);
+        }).finally(() => {
+          if (pendingWritesRef.current.get(key) === write) pendingWritesRef.current.delete(key);
         });
-        refreshDraft();
-        setSaveError('');
         return reference.id;
       };
       const stageCard = (cardId, blocks) => {
         if (deletedCardsRef.current.has(cardId)) return;
-        applyLocalWrite('cards', doc(db, 'artifacts', appId, 'users', user.uid, 'cards', cardId), { blocks }, 'update');
-      };
-      const handleSaveAll = async () => {
-        if (savingRef.current || draftRef.current.size === 0) return;
-        savingRef.current = true;
-        setSaving(true);
-        setSaveError('');
-        setLastSaveInfo(null);
-        // Snapshot only the changes present at click time. New edits remain in the draft.
-        const entries = [...draftRef.current.entries()].map(([key, change]) => [key, { ...change }]);
-        const started = performance.now();
-        const totalBatches = Math.ceil(entries.length / 400);
-        let completed = 0;
-        console.info(`[FG Tool] Cloud save started: ${entries.length} documents, ${totalBatches} batches`);
-        try {
-          // Process batches sequentially to preserve ordering and avoid cross-batch races.
-          for (let i = 0; i < entries.length; i += 400) {
-            const chunk = entries.slice(i, i + 400);
-            const batchNo = Math.floor(i / 400) + 1;
-            const batch = writeBatch(db);
-            const kinds = {};
-            chunk.forEach(([key, change]) => {
-              const separator = key.indexOf('/');
-              const name = key.slice(0, separator);
-              const id = key.slice(separator + 1);
-              kinds[`${name}:${change.mode}`] = (kinds[`${name}:${change.mode}`] || 0) + 1;
-              const reference = doc(db, 'artifacts', appId, 'users', user.uid, name, id);
-              if (change.mode === 'delete') batch.delete(reference);
-              else if (change.mode === 'update') batch.update(reference, change.data);
-              else batch.set(reference, change.data);
-            });
-            const batchStarted = performance.now();
-            setSaveProgress(`保存中 ${batchNo}/${totalBatches} (${completed}/${entries.length}件完了)`);
-            console.info(`[FG Tool] Batch ${batchNo}/${totalBatches} sending ${chunk.length} docs`, kinds);
-            try {
-              await batch.commit();
-            } catch (error) {
-              const seconds = ((performance.now() - batchStarted) / 1000).toFixed(2);
-              console.error(`[FG Tool] Batch ${batchNo} failed after ${seconds}s`, {
-                code: error.code, message: error.message, operations: kinds
-              });
-              throw error;
-            }
-            const seconds = ((performance.now() - batchStarted) / 1000).toFixed(2);
-            console.info(`[FG Tool] Batch ${batchNo} committed in ${seconds}s`);
-            completed += chunk.length;
-            // Don't discard any edits made after the save button was clicked.
-            chunk.forEach(([key, change]) => {
-              if (draftRef.current.get(key)?.version === change.version) draftRef.current.delete(key);
-            });
-            refreshDraft();
-          }
-          const seconds = ((performance.now() - started) / 1000).toFixed(2);
-          setLastSaveInfo(`${completed}件を${seconds}秒でクラウド保存しました`);
-          console.info(`[FG Tool] Cloud save complete: ${completed} docs, ${seconds}s`);
-        } catch (error) {
-          const seconds = ((performance.now() - started) / 1000).toFixed(2);
-          setSaveError(`保存に失敗しました（${completed}/${entries.length}件完了・${seconds}秒）: ${error.code || 'unknown'} ${error.message}`);
-        } finally {
-          setSaveProgress('');
-          savingRef.current = false;
-          setSaving(false);
-        }
-      };
-      useEffect(() => {
-        const warnUnsaved = (event) => {
-          if (draftRef.current.size === 0 && !savingRef.current) return;
-          event.preventDefault();
-          event.returnValue = '';
-        };
-        window.addEventListener('beforeunload', warnUnsaved);
-        return () => window.removeEventListener('beforeunload', warnUnsaved);
-      }, []);
-      const handleLogout = () => {
-        if (draftRef.current.size && !window.confirm('未保存の変更があります。クラウドへ保存せずにログアウトしますか？')) return;
-        auth.signOut();
+        const key = `cards/${cardId}`;
+        const version = ++optimisticVersionRef.current;
+        setOptimistic(prev => ({ ...prev, [key]: { version, mode: 'update', data: { blocks } } }));
       };
       const overlayCollection = (name, items) => {
         const result = new Map(items.map(item => [item.id, item]));
@@ -401,19 +327,13 @@
               </nav>
             </div>
             <div className="flex items-center space-x-2">
-              <button onClick={handleSaveAll} disabled={saving || draftCount === 0} title="変更をクラウドに保存" className={`flex items-center text-xs font-bold px-3 py-1.5 rounded-md border transition-colors ${draftCount ? 'bg-cyan-600 hover:bg-cyan-500 text-white border-cyan-500' : 'bg-slate-900 border-slate-800 text-slate-500'} disabled:cursor-default`}>
-                <Save size={15} className="mr-1.5" />{saving ? '保存中...' : draftCount ? `保存 (${draftCount})` : '保存済み'}
-              </button>
-              <button onClick={handleLogout} className="flex items-center text-xs text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 px-2.5 py-1.5 rounded-md border border-slate-800 transition-colors" title="ログアウト">
+              <button onClick={() => auth.signOut()} className="flex items-center text-xs text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 px-2.5 py-1.5 rounded-md border border-slate-800 transition-colors" title="ログアウト">
                 <LogOut size={14} className="mr-1.5 md:mr-0" />
                 <span className="hidden md:inline ml-1.5">Logout</span>
               </button>
             </div>
           </header>
 
-          {saveProgress && <div role="status" className="bg-slate-800 border-b border-slate-700 px-4 py-1.5 text-xs text-cyan-200">{saveProgress}</div>}
-          {!saveProgress && lastSaveInfo && <div role="status" className="bg-slate-900 border-b border-slate-800 px-4 py-1.5 text-xs text-emerald-300 flex justify-between">{lastSaveInfo}<button onClick={() => setLastSaveInfo(null)} title="閉じる"><X size={14}/></button></div>}
-          {saveError && <div role="alert" className="bg-red-950 border-b border-red-800 px-4 py-2 text-xs text-red-200 flex items-center justify-between">{saveError}<button onClick={() => setSaveError('')}><X size={14}/></button></div>}
           <div className="flex flex-1 overflow-hidden">
             <aside className="w-24 md:w-48 flex-none bg-slate-950 border-r border-slate-800 flex flex-col overflow-y-auto">
               <div className="p-3 border-b border-slate-800 sticky top-0 bg-slate-950/90 backdrop-blur z-10 hidden md:block">
@@ -510,10 +430,15 @@
         setEditingMove(null);
       };
 
-      const handleDeleteCustomMove = (moveId) => {
+      const handleDeleteCustomMove = async (moveId) => {
         if (!moveId) return;
-        applyLocalWrite('moves', doc(db, 'artifacts', appId, 'users', user.uid, 'moves', moveId), null, 'delete');
-        setEditingMove(null);
+        try {
+          await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'moves', moveId));
+          setEditingMove(null);
+        } catch (err) {
+          console.error("Error deleting move:", err);
+          alert(`技データを削除できませんでした: ${err.message}`);
+        }
       };
 
       return (
@@ -787,15 +712,15 @@
         setDeleteTarget(null);
       };
 
-      const moveCard = (card, direction) => {
+      const moveCard = async (card, direction) => {
         const index = currentCards.findIndex(item => item.id === card.id);
         const nextIndex = index + direction;
         if (index < 0 || nextIndex < 0 || nextIndex >= currentCards.length) return;
         const reordered = [...currentCards];
         [reordered[index], reordered[nextIndex]] = [reordered[nextIndex], reordered[index]];
-        reordered.forEach((item, order) => {
-          if (item.order !== order) applyLocalWrite('cards', doc(db, 'artifacts', appId, 'users', user.uid, 'cards', item.id), { order }, 'update');
-        });
+        try {
+          await Promise.all(reordered.map((item, order) => updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'cards', item.id), { order })));
+        } catch (err) { console.error('Card reorder failed:', err); alert(`カードの並べ替えに失敗しました: ${err.message}`); }
       };
 
       // Keep drag payload in a ref: React state updates are asynchronous and
@@ -992,12 +917,24 @@
       const initialBlocks = Array.isArray(card.blocks) ? card.blocks : [];
       const [blocks, setBlocks] = useState(initialBlocks);
       const blocksRef = useRef(initialBlocks);
+      const saveTimerRef = useRef(null);
       const latestJsonRef = useRef(JSON.stringify(initialBlocks));
       const savedJsonRef = useRef(JSON.stringify(initialBlocks));
       const deletedRef = useRef(false);
       const ioRef = useRef({ db, appId, user, cardId: card.id, applyLocalWrite, stageCard });
       ioRef.current = { db, appId, user, cardId: card.id, applyLocalWrite, stageCard };
 
+      // Sending a write hands its responsibility to MainLayout. It survives
+      // CardEditor being unmounted by a tab or character switch.
+      const flushSave = () => {
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+        if (deletedRef.current || savedJsonRef.current === latestJsonRef.current) return;
+        const json = latestJsonRef.current;
+        savedJsonRef.current = json;
+        const io = ioRef.current;
+        io.applyLocalWrite('cards', doc(io.db, 'artifacts', io.appId, 'users', io.user.uid, 'cards', io.cardId), { blocks: JSON.parse(json) }, 'update');
+      };
       const commitBlocks = (updater, immediate = false) => {
         const previous = blocksRef.current;
         const next = typeof updater === 'function' ? updater(previous) : updater;
@@ -1005,10 +942,11 @@
         if (json === latestJsonRef.current) return;
         blocksRef.current = next;
         latestJsonRef.current = json;
-        savedJsonRef.current = json;
         setBlocks(next);
-        // Store the edit in MainLayout's draft immediately. No timer or cloud write.
         ioRef.current.stageCard(card.id, next);
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        if (immediate) flushSave();
+        else saveTimerRef.current = setTimeout(flushSave, 250);
       };
       const updateBlock = (blockId, patch, immediate = false) =>
         commitBlocks(previous => previous.map(block => block.id === blockId ? { ...block, ...patch } : block), immediate);
@@ -1023,10 +961,12 @@
           setBlocks(incoming);
         }
       }, [card.id, incomingJson]);
+      useEffect(() => () => flushSave(), [card.id]);
 
       const handleDeleteCard = async () => {
         if (!window.confirm('このカードを削除しますか？')) return;
         try {
+          if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
           deletedRef.current = true;
           applyLocalWrite('cards', doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id), null, 'delete');
         }
