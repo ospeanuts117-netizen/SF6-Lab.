@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool (Standalone)</title>
+  <title>FG Tool</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -228,6 +228,58 @@
       const [allFolders, setAllFolders] = useState([]);
       const [allCards, setAllCards] = useState([]);
 
+      const [optimistic, setOptimistic] = useState({});
+      const pendingWritesRef = useRef(new Map());
+      const optimisticVersionRef = useRef(0);
+      const applyLocalWrite = (name, reference, data, mode = 'set') => {
+        const key = `${name}/${reference.id}`;
+        const version = ++optimisticVersionRef.current;
+        setOptimistic(prev => ({ ...prev, [key]: { version, mode, data } }));
+        // Firestore supplies local latency compensation, while this overlay
+        // keeps the change visible even when a tab/character is switched.
+        const previous = pendingWritesRef.current.get(key) || Promise.resolve();
+        const write = previous.catch(() => {}).then(() =>
+          mode === 'delete' ? deleteDoc(reference) :
+          mode === 'update' ? updateDoc(reference, data) : setDoc(reference, data)
+        );
+        pendingWritesRef.current.set(key, write);
+        void write.then(() => {
+          setOptimistic(prev => {
+            if (prev[key]?.version !== version) return prev;
+            const next = { ...prev }; delete next[key]; return next;
+          });
+        }).catch(error => {
+          console.error('Cloud save failed:', name, reference.id, error);
+          setOptimistic(prev => {
+            if (prev[key]?.version !== version) return prev;
+            const next = { ...prev }; delete next[key]; return next;
+          });
+          alert(`クラウドへの保存に失敗しました (${name}): ${error.message}`);
+        }).finally(() => {
+          if (pendingWritesRef.current.get(key) === write) pendingWritesRef.current.delete(key);
+        });
+        return reference.id;
+      };
+      const stageCard = (cardId, blocks) => {
+        const key = `cards/${cardId}`;
+        const version = ++optimisticVersionRef.current;
+        setOptimistic(prev => ({ ...prev, [key]: { version, mode: 'update', data: { blocks } } }));
+      };
+      const overlayCollection = (name, items) => {
+        const result = new Map(items.map(item => [item.id, item]));
+        Object.entries(optimistic).forEach(([key, change]) => {
+          if (!key.startsWith(`${name}/`)) return;
+          const id = key.slice(name.length + 1);
+          if (change.mode === 'delete') result.delete(id);
+          else result.set(id, { ...(result.get(id) || {}), ...change.data, id });
+        });
+        return [...result.values()];
+      };
+      const visibleMoves = overlayCollection('moves', allMoves);
+      const visibleMemos = overlayCollection('memos', allMemos);
+      const visibleFolders = overlayCollection('folders', allFolders);
+      const visibleCards = overlayCollection('cards', allCards);
+
       useEffect(() => {
         if (!user) return;
         const subscriptions = [
@@ -244,7 +296,7 @@
       }, [db, user.uid, appId]);
 
       const currentMoves = useMemo(() => {
-        const customMovesForChar = allMoves.filter(m => m.charId === selectedChar);
+        const customMovesForChar = visibleMoves.filter(m => m.charId === selectedChar);
         const merged = [];
         ALL_DEFAULT_MOVES.forEach(def => {
           const override = customMovesForChar.find(m => m.overrideId === def.id);
@@ -253,7 +305,7 @@
         });
         const customOnly = customMovesForChar.filter(m => !m.overrideId);
         return [...merged, ...customOnly];
-      }, [allMoves, selectedChar]);
+      }, [allMoves, optimistic, selectedChar]);
 
       return (
         <div className="h-screen flex flex-col bg-slate-900 text-slate-200 font-sans overflow-hidden">
@@ -297,11 +349,11 @@
             </aside>
             <main className="flex-1 flex flex-col min-w-0 overflow-hidden bg-slate-900">
               <div className={activeTab === 'data' ? 'hidden h-full' : 'flex flex-1 min-h-0'}>
-                <NotesView tab={notesTab} charName={selectedChar}
-                  memos={allMemos.filter(m => m.charId === selectedChar && m.tab === notesTab)}
-                  allFolders={allFolders} allCards={allCards} moves={currentMoves} db={db} user={user} appId={appId} />
+                <NotesView tab={notesTab} charName={selectedChar} applyLocalWrite={applyLocalWrite}
+                  memos={visibleMemos.filter(m => m.charId === selectedChar && m.tab === notesTab)}
+                  allFolders={visibleFolders} allCards={visibleCards} moves={currentMoves} stageCard={stageCard} db={db} user={user} appId={appId} />
               </div>
-              {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} db={db} user={user} appId={appId} />}
+              {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} applyLocalWrite={applyLocalWrite} db={db} user={user} appId={appId} />}
             </main>
           </div>
         </div>
@@ -340,7 +392,7 @@
     }
 
     // --- Data Tab ---
-    function DataView({ charName, moves, db, user, appId }) {
+    function DataView({ charName, moves, db, user, appId, applyLocalWrite }) {
       const [activeCategory, setActiveCategory] = useState(CATEGORIES[0]);
       const [editingMove, setEditingMove] = useState(null);
 
@@ -348,34 +400,26 @@
         return moves.filter(m => m.category === activeCategory);
       }, [moves, activeCategory]);
 
-      const handleSaveMove = async (moveData) => {
-        try {
-          const payload = { ...moveData };
-          const isNewCustom = !payload.id;
-          const isDefaultEdit = payload.isDefault === true;
-          let docRef;
-          if (isDefaultEdit) {
-            docRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'moves'));
-            payload.overrideId = payload.id;
-            delete payload.isDefault;
-            delete payload.id;
-          } else if (isNewCustom) {
-            docRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'moves'));
-          } else {
-            docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'moves', moveData.id);
-          }
-
-          await setDoc(docRef, {
-            ...payload,
-            charId: charName,
-            category: payload.category || activeCategory,
-            id: docRef.id
-          });
-          setEditingMove(null);
-        } catch (err) {
-          console.error("Error saving move:", err);
-          alert(`技データを保存できませんでした: ${err.message}`);
+      const handleSaveMove = (moveData) => {
+        const payload = { ...moveData };
+        const isNewCustom = !payload.id;
+        const isDefaultEdit = payload.isDefault === true;
+        let reference;
+        if (isDefaultEdit) {
+          reference = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'moves'));
+          payload.overrideId = payload.id;
+          delete payload.isDefault;
+          delete payload.id;
+        } else if (isNewCustom) {
+          reference = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'moves'));
+        } else {
+          reference = doc(db, 'artifacts', appId, 'users', user.uid, 'moves', payload.id);
         }
+        applyLocalWrite('moves', reference, {
+          ...payload, charId: charName,
+          category: payload.category || activeCategory, id: reference.id
+        });
+        setEditingMove(null);
       };
 
       const handleDeleteCustomMove = async (moveId) => {
@@ -565,7 +609,7 @@
     }
 
     // --- Notes Tab ---
-    function NotesView({ tab, charName, memos, allFolders, allCards, moves, db, user, appId }) {
+    function NotesView({ tab, charName, memos, allFolders, allCards, moves, db, user, appId, applyLocalWrite }) {
       const [selectedMemoId, setSelectedMemoId] = useState(null);
       const [creatingType, setCreatingType] = useState(null);
       const [newItemTitle, setNewItemTitle] = useState('');
@@ -597,21 +641,21 @@
         setCreatingType(type);
       };
 
-      const handleCreate = async () => {
+      const handleCreate = () => {
         if (!newItemTitle.trim() || isCreating) return;
-        setIsCreating(true);
-        try {
-          if (creatingType === 'folder') {
-             await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'folders'), { charId: charName, tab, title: newItemTitle.trim(), order: currentFolders.length });
-          } else if (creatingType && creatingType.type === 'memo') {
-             const folderId = creatingType.folderId;
-             const order = currentMemos.filter(m => m.folderId === folderId).length;
-             const docRef = await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'memos'), { charId: charName, tab, title: newItemTitle.trim(), folderId, order });
-             pendingMemoSelectionRef.current = docRef.id;
-          }
-          setCreatingType(null); setNewItemTitle('');
-        } catch (err) { console.error(err); alert(`作成できませんでした: ${err.message}`); }
-        finally { setIsCreating(false); }
+        const title = newItemTitle.trim();
+        if (creatingType === 'folder') {
+          const reference = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'folders'));
+          applyLocalWrite('folders', reference, { charId: charName, tab, title, order: currentFolders.length });
+        } else if (creatingType && creatingType.type === 'memo') {
+          const folderId = creatingType.folderId;
+          const order = currentMemos.filter(m => m.folderId === folderId).length;
+          const reference = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'memos'));
+          pendingMemoSelectionRef.current = reference.id;
+          applyLocalWrite('memos', reference, { charId: charName, tab, title, folderId, order });
+        } else return;
+        setCreatingType(null);
+        setNewItemTitle('');
       };
 
       const handleRename = async (collectionName, id) => {
@@ -621,7 +665,7 @@
         const items = collectionName === 'folders' ? currentFolders : currentMemos;
         if (!title || title === items.find(item => item.id === id)?.title) return;
         try {
-          await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, collectionName, id), { title });
+          applyLocalWrite(collectionName, doc(db, 'artifacts', appId, 'users', user.uid, collectionName, id), { title }, 'update');
         } catch (error) {
           console.error('Rename failed:', error);
           alert(`名前の変更に失敗しました: ${error.message}`);
@@ -752,7 +796,7 @@
           <main className="flex-1 flex flex-col bg-slate-900 overflow-hidden relative">
             {selectedMemoId ? (
               <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
-                {currentCards.map((card, index) => <CardEditor key={card.id} card={card} moves={moves} db={db} appId={appId} user={user} onMove={direction => moveCard(card, direction)} isFirst={index === 0} isLast={index === currentCards.length - 1} />)}
+                {currentCards.map((card, index) => <CardEditor key={card.id} card={card} moves={moves} db={db} appId={appId} user={user} onMove={direction => moveCard(card, direction)} isFirst={index === 0} isLast={index === currentCards.length - 1} applyLocalWrite={applyLocalWrite} stageCard={stageCard} />)}
                 <button onClick={handleAddCard} className="w-full py-4 border-2 border-dashed border-slate-700 rounded-xl text-slate-500 hover:text-cyan-400 hover:border-cyan-500 hover:bg-slate-800/30 transition-all flex items-center justify-center font-medium"><Plus size={20} className="mr-2" /> Add New Card</button>
               </div>
             ) : <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">Select or create a memo</div>}
@@ -794,82 +838,48 @@
       return <textarea ref={ref} value={value} onChange={onChange} placeholder={placeholder} className={`${className} overflow-hidden resize-none`} rows={1} />;
     }
 
-    function CardEditor({ card, moves, db, appId, user, onMove, isFirst, isLast }) {
+    function CardEditor({ card, moves, db, appId, user, onMove, isFirst, isLast, applyLocalWrite, stageCard }) {
       const [editingBlock, setEditingBlock] = useState(null);
       const initialBlocks = Array.isArray(card.blocks) ? card.blocks : [];
       const [blocks, setBlocks] = useState(initialBlocks);
       const blocksRef = useRef(initialBlocks);
       const saveTimerRef = useRef(null);
-      const pendingRef = useRef(false);
-      const inFlightRef = useRef(null);
-      const savedJsonRef = useRef(JSON.stringify(initialBlocks));
       const latestJsonRef = useRef(JSON.stringify(initialBlocks));
+      const savedJsonRef = useRef(JSON.stringify(initialBlocks));
       const deletedRef = useRef(false);
-      const saveContextRef = useRef({ db, appId, user, cardId: card.id });
-      saveContextRef.current = { db, appId, user, cardId: card.id };
+      const ioRef = useRef({ db, appId, user, cardId: card.id, applyLocalWrite, stageCard });
+      ioRef.current = { db, appId, user, cardId: card.id, applyLocalWrite, stageCard };
 
-      // Only one Firestore write per card at a time. Changes made while a write
-      // is running are combined into one subsequent write (latest value wins).
+      // Sending a write hands its responsibility to MainLayout. It survives
+      // CardEditor being unmounted by a tab or character switch.
       const flushSave = () => {
-        if (saveTimerRef.current) {
-          clearTimeout(saveTimerRef.current);
-          saveTimerRef.current = null;
-        }
-        if (deletedRef.current) return Promise.resolve();
-        if (inFlightRef.current) return inFlightRef.current;
-        if (latestJsonRef.current === savedJsonRef.current) {
-          pendingRef.current = false;
-          return Promise.resolve();
-        }
-        const { db: currentDb, appId: currentAppId, user: currentUser, cardId } = saveContextRef.current;
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+        if (deletedRef.current || savedJsonRef.current === latestJsonRef.current) return;
         const json = latestJsonRef.current;
-        const payload = JSON.parse(json);
-        const reference = doc(currentDb, 'artifacts', currentAppId, 'users', currentUser.uid, 'cards', cardId);
-        const task = updateDoc(reference, { blocks: payload })
-          .then(() => {
-            savedJsonRef.current = json;
-            if (latestJsonRef.current === json) {
-              pendingRef.current = false;
-            }
-          })
-          .catch(error => {
-            console.error('Card save failed:', error);
-            throw error;
-          })
-          .finally(() => {
-            inFlightRef.current = null;
-            if (!deletedRef.current && latestJsonRef.current !== savedJsonRef.current &&
-                savedJsonRef.current === json) {
-              // An edit arrived during the request: save only its newest version.
-              void flushSave().catch(() => {});
-            }
-          });
-        inFlightRef.current = task;
-        return task;
+        savedJsonRef.current = json;
+        const io = ioRef.current;
+        io.applyLocalWrite('cards', doc(io.db, 'artifacts', io.appId, 'users', io.user.uid, 'cards', io.cardId), { blocks: JSON.parse(json) }, 'update');
       };
-
       const commitBlocks = (updater, immediate = false) => {
         const previous = blocksRef.current;
         const next = typeof updater === 'function' ? updater(previous) : updater;
         const json = JSON.stringify(next);
-        if (json === latestJsonRef.current) return Promise.resolve();
+        if (json === latestJsonRef.current) return;
         blocksRef.current = next;
         latestJsonRef.current = json;
-        pendingRef.current = true;
         setBlocks(next);
+        ioRef.current.stageCard(card.id, next);
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-        if (immediate) return flushSave();
-        saveTimerRef.current = setTimeout(() => { void flushSave().catch(() => {}); }, 250);
-        return Promise.resolve();
+        if (immediate) flushSave();
+        else saveTimerRef.current = setTimeout(flushSave, 250);
       };
-
       const updateBlock = (blockId, patch, immediate = false) =>
         commitBlocks(previous => previous.map(block => block.id === blockId ? { ...block, ...patch } : block), immediate);
-
       const incomingJson = JSON.stringify(Array.isArray(card.blocks) ? card.blocks : []);
       useEffect(() => {
         if (incomingJson === latestJsonRef.current) return;
-        if (!pendingRef.current) {
+        if (latestJsonRef.current === savedJsonRef.current) {
           const incoming = Array.isArray(card.blocks) ? card.blocks : [];
           blocksRef.current = incoming;
           latestJsonRef.current = incomingJson;
@@ -877,22 +887,14 @@
           setBlocks(incoming);
         }
       }, [card.id, incomingJson]);
-
-      useEffect(() => {
-        return () => {
-          if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-          if (pendingRef.current) void flushSave().catch(() => {});
-        };
-      }, [card.id]);
+      useEffect(() => () => flushSave(), [card.id]);
 
       const handleDeleteCard = async () => {
         if (!window.confirm('このカードを削除しますか？')) return;
         try {
           if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-          pendingRef.current = false;
           deletedRef.current = true;
-          if (inFlightRef.current) await inFlightRef.current.catch(() => {});
-          await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id));
+          applyLocalWrite('cards', doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id), null, 'delete');
         }
         catch (err) { console.error(err); alert(`カードを削除できませんでした: ${err.message}`); }
       };
@@ -913,12 +915,10 @@
         [next[index], next[target]] = [next[target], next[index]];
         return next;
       });
-      const handleSaveCombo = async (updatedComboBlock) => {
-        await updateBlock(updatedComboBlock.id, updatedComboBlock, true);
-        // A write may already have been running: wait for the latest payload, too.
-        if (latestJsonRef.current !== savedJsonRef.current) await flushSave();
-        if (latestJsonRef.current !== savedJsonRef.current) await flushSave();
-        if (latestJsonRef.current !== savedJsonRef.current) throw new Error('最新の変更を保存できませんでした');
+      const handleSaveCombo = (updatedComboBlock) => {
+        // Commit to React state and optimistic overlay synchronously.
+        // The cloud write is queued, not awaited by the popup.
+        updateBlock(updatedComboBlock.id, updatedComboBlock, true);
         setEditingBlock(null);
       };
       const safeBlocks = Array.isArray(blocks) ? blocks : [];
