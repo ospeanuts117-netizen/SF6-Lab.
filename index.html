@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool (Standalone)</title>
+  <title>FG Tool</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -29,12 +29,12 @@
   <div id="root"></div>
 
   <script type="text/babel" data-type="module">
-    import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+    import React, { useState, useEffect, useMemo, useRef } from 'react';
     import { createRoot } from 'react-dom/client';
     import { initializeApp } from 'firebase/app';
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
     import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, addDoc, updateDoc } from 'firebase/firestore';
-    import { Book, Shield, Sword, FolderPlus, FilePlus, ChevronRight, ChevronUp, ChevronDown, X, Edit2, Plus, Save, Trash2, GripVertical, Folder, FileText, Pencil, Cloud, LogOut, Mail, Lock, UserPlus, LogIn } from 'lucide-react';
+    import { Book, Shield, Sword, FolderPlus, FilePlus, ChevronRight, ChevronUp, ChevronDown, X, Edit2, Plus, Save, Trash2, GripVertical, Folder, FileText, Pencil, LogOut, Mail, Lock, UserPlus, LogIn } from 'lucide-react';
 
     // --- Firebase Configuration ---
     // IMPORTANT: Firebase API keys are not secrets. Configure Firestore Security Rules
@@ -227,12 +227,6 @@
       const [allMemos, setAllMemos] = useState([]);
       const [allFolders, setAllFolders] = useState([]);
       const [allCards, setAllCards] = useState([]);
-      const [cardSaveStates, setCardSaveStates] = useState({});
-      const reportCardSave = useCallback((id, status) => {
-        setCardSaveStates(previous => ({ ...previous, [id]: status }));
-      }, []);
-      const saveStatus = Object.values(cardSaveStates).includes('error') ? 'error'
-        : Object.values(cardSaveStates).some(v => v === 'pending' || v === 'saving') ? 'saving' : 'synced';
 
       useEffect(() => {
         if (!user) return;
@@ -273,10 +267,6 @@
               </nav>
             </div>
             <div className="flex items-center space-x-2">
-              <div className={`hidden md:flex items-center text-xs px-2.5 py-1.5 rounded-md border ${saveStatus === 'error' ? 'text-red-400 bg-red-950/30 border-red-900/50' : saveStatus === 'saving' ? 'text-amber-400 bg-amber-950/30 border-amber-900/50' : 'text-emerald-400 bg-emerald-950/30 border-emerald-900/50'}`} title="Card save status">
-                <Cloud size={14} className="mr-1.5" />
-                <span className="font-medium">{saveStatus === 'error' ? 'Save Failed' : saveStatus === 'saving' ? 'Saving...' : 'Cloud Synced'}</span>
-              </div>
               <button onClick={() => auth.signOut()} className="flex items-center text-xs text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 px-2.5 py-1.5 rounded-md border border-slate-800 transition-colors" title="ログアウト">
                 <LogOut size={14} className="mr-1.5 md:mr-0" />
                 <span className="hidden md:inline ml-1.5">Logout</span>
@@ -309,7 +299,7 @@
               <div className={activeTab === 'data' ? 'hidden h-full' : 'flex flex-1 min-h-0'}>
                 <NotesView tab={notesTab} charName={selectedChar}
                   memos={allMemos.filter(m => m.charId === selectedChar && m.tab === notesTab)}
-                  allFolders={allFolders} allCards={allCards} moves={currentMoves} reportCardSave={reportCardSave} db={db} user={user} appId={appId} />
+                  allFolders={allFolders} allCards={allCards} moves={currentMoves} db={db} user={user} appId={appId} />
               </div>
               {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} db={db} user={user} appId={appId} />}
             </main>
@@ -542,7 +532,12 @@
             </div>
 
             <div className="grid grid-cols-3 gap-2">
-              <FrameInput label="発生" name="startup" value={formData.startup || ''} onChange={handleFrameChange} />
+              <div className="min-w-0">
+                <label className="block text-xs font-medium text-slate-400 mb-1">発生</label>
+                <input type="text" inputMode="numeric" name="startup" value={formData.startup || ''} onChange={handleChange}
+                  className="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-md px-2 py-2 text-white focus:outline-none focus:border-cyan-500"
+                  placeholder="数値" />
+              </div>
               <FrameInput label="ヒット" name="hit" value={formData.hit || ''} onChange={handleFrameChange} />
               <FrameInput label="ガード" name="block" value={formData.block || ''} onChange={handleFrameChange} />
             </div>
@@ -563,7 +558,7 @@
     }
 
     // --- Notes Tab ---
-    function NotesView({ tab, charName, memos, allFolders, allCards, moves, reportCardSave, db, user, appId }) {
+    function NotesView({ tab, charName, memos, allFolders, allCards, moves, db, user, appId }) {
       const [selectedMemoId, setSelectedMemoId] = useState(null);
       const [creatingType, setCreatingType] = useState(null);
       const [newItemTitle, setNewItemTitle] = useState('');
@@ -747,7 +742,7 @@
           <main className="flex-1 flex flex-col bg-slate-900 overflow-hidden relative">
             {selectedMemoId ? (
               <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
-                {currentCards.map((card, index) => <CardEditor key={card.id} card={card} moves={moves} reportCardSave={reportCardSave} db={db} appId={appId} user={user} onMove={direction => moveCard(card, direction)} isFirst={index === 0} isLast={index === currentCards.length - 1} />)}
+                {currentCards.map((card, index) => <CardEditor key={card.id} card={card} moves={moves} db={db} appId={appId} user={user} onMove={direction => moveCard(card, direction)} isFirst={index === 0} isLast={index === currentCards.length - 1} />)}
                 <button onClick={handleAddCard} className="w-full py-4 border-2 border-dashed border-slate-700 rounded-xl text-slate-500 hover:text-cyan-400 hover:border-cyan-500 hover:bg-slate-800/30 transition-all flex items-center justify-center font-medium"><Plus size={20} className="mr-2" /> Add New Card</button>
               </div>
             ) : <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">Select or create a memo</div>}
@@ -789,7 +784,7 @@
       return <textarea ref={ref} value={value} onChange={onChange} placeholder={placeholder} className={`${className} overflow-hidden resize-none`} rows={1} />;
     }
 
-    function CardEditor({ card, moves, db, appId, user, reportCardSave, onMove, isFirst, isLast }) {
+    function CardEditor({ card, moves, db, appId, user, onMove, isFirst, isLast }) {
       const [editingBlock, setEditingBlock] = useState(null);
       const initialBlocks = Array.isArray(card.blocks) ? card.blocks : [];
       const [blocks, setBlocks] = useState(initialBlocks);
@@ -800,9 +795,8 @@
       const savedJsonRef = useRef(JSON.stringify(initialBlocks));
       const latestJsonRef = useRef(JSON.stringify(initialBlocks));
       const deletedRef = useRef(false);
-      const mountedRef = useRef(true);
-      const saveContextRef = useRef({ db, appId, user, cardId: card.id, reportCardSave });
-      saveContextRef.current = { db, appId, user, cardId: card.id, reportCardSave };
+      const saveContextRef = useRef({ db, appId, user, cardId: card.id });
+      saveContextRef.current = { db, appId, user, cardId: card.id };
 
       // Only one Firestore write per card at a time. Changes made while a write
       // is running are combined into one subsequent write (latest value wins).
@@ -815,25 +809,21 @@
         if (inFlightRef.current) return inFlightRef.current;
         if (latestJsonRef.current === savedJsonRef.current) {
           pendingRef.current = false;
-          reportCardSave(card.id, 'synced');
           return Promise.resolve();
         }
-        const { db: currentDb, appId: currentAppId, user: currentUser, cardId, reportCardSave: report } = saveContextRef.current;
+        const { db: currentDb, appId: currentAppId, user: currentUser, cardId } = saveContextRef.current;
         const json = latestJsonRef.current;
         const payload = JSON.parse(json);
-        report(cardId, 'saving');
         const reference = doc(currentDb, 'artifacts', currentAppId, 'users', currentUser.uid, 'cards', cardId);
         const task = updateDoc(reference, { blocks: payload })
           .then(() => {
             savedJsonRef.current = json;
             if (latestJsonRef.current === json) {
               pendingRef.current = false;
-              report(cardId, 'synced');
             }
           })
           .catch(error => {
             console.error('Card save failed:', error);
-            report(cardId, 'error');
             throw error;
           })
           .finally(() => {
@@ -857,7 +847,6 @@
         latestJsonRef.current = json;
         pendingRef.current = true;
         setBlocks(next);
-        reportCardSave(card.id, 'pending');
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
         if (immediate) void flushSave().catch(() => {});
         else saveTimerRef.current = setTimeout(() => { void flushSave().catch(() => {}); }, 250);
@@ -880,9 +869,7 @@
       }, [card.id, incomingJson]);
 
       useEffect(() => {
-        mountedRef.current = true;
         return () => {
-          mountedRef.current = false;
           if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
           if (pendingRef.current) void flushSave().catch(() => {});
         };
@@ -896,7 +883,6 @@
           deletedRef.current = true;
           if (inFlightRef.current) await inFlightRef.current.catch(() => {});
           await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id));
-          reportCardSave(card.id, 'synced');
         }
         catch (err) { console.error(err); alert(`カードを削除できませんでした: ${err.message}`); }
       };
