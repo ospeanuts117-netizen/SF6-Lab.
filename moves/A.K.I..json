@@ -1,1375 +1,750 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SF6 Lab.</title>
-  
-  <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  
-  <!-- Import Maps for React, Firebase, and Icons -->
-  <script type="importmap">
-    {
-      "imports": {
-        "react": "https://esm.sh/react@18.2.0",
-        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-        "lucide-react": "https://esm.sh/lucide-react@0.292.0",
-        "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
-        "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
-        "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
-      }
-    }
-  </script>
-  
-  <!-- Excel library is loaded on demand, so it cannot block initial rendering. -->
-
-  <!-- Babel for running React directly in browser -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <style>
-    /* Keep the character list scrollbar inside its column, without a visible track. */
-    .character-scroll { scrollbar-width: thin; scrollbar-color: rgba(148,163,184,.38) transparent; scrollbar-gutter: stable; }
-    .character-scroll::-webkit-scrollbar { width: 6px; }
-    .character-scroll::-webkit-scrollbar-track { background: transparent; }
-    .character-scroll::-webkit-scrollbar-thumb { background: rgba(148,163,184,.38); border-radius: 999px; }
-    .character-scroll::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,.65); }
-  </style>
-</head>
-<body class="bg-slate-900 text-slate-200">
-  <div id="root"><div style="padding:32px;color:#94a3b8;font-family:sans-serif">FG Tool を読み込み中…<div style="font-size:12px;margin-top:8px">このまま表示されない場合は、インターネット接続とブラウザのコンソールを確認してください。</div></div></div>
-
-  <script type="text/babel" data-type="module">
-    import React, { useState, useEffect, useMemo, useRef } from 'react';
-    import { createRoot } from 'react-dom/client';
-    import { initializeApp } from 'firebase/app';
-    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
-    import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, addDoc, updateDoc } from 'firebase/firestore';
-    import { Book, Shield, Sword, FolderPlus, FilePlus, ChevronRight, ChevronUp, ChevronDown, X, Edit2, Plus, Save, Trash2, GripVertical, Folder, FileText, Pencil, LogOut, Mail, Lock, UserPlus, LogIn } from 'lucide-react';
-
-    // --- Firebase Configuration ---
-    // IMPORTANT: Firebase API keys are not secrets. Configure Firestore Security Rules
-    // so users can read/write only under their own users/{uid} data path.
-    const isEnvProvided = typeof window.__firebase_config !== 'undefined';
-    
-    // ご自身のFirebaseプロジェクトの設定
-    const standaloneConfig = {
-      apiKey: "AIzaSyALJwiCDwAWmuYB8Bhd3VyxLP922A2Uo2k",
-      authDomain: "fg-tool.firebaseapp.com",
-      projectId: "fg-tool",
-      storageBucket: "fg-tool.firebasestorage.app",
-      messagingSenderId: "113539189260",
-      appId: "1:113539189260:web:527e29852946c26581bc29",
-      measurementId: "G-70YY0Q3L03"
-    };
-
-    const firebaseConfig = isEnvProvided ? JSON.parse(window.__firebase_config) : standaloneConfig;
-    const appId = typeof window.__app_id !== 'undefined' ? window.__app_id : 'fg-tool-standalone';
-
-    let app, auth, db;
-    let configError = null;
-
-    try {
-      if (!firebaseConfig.apiKey) {
-         configError = "Firebaseの設定が必要です。";
-      } else {
-         app = initializeApp(firebaseConfig);
-         auth = getAuth(app);
-         db = getFirestore(app);
-      }
-    } catch (e) {
-      configError = e.message;
-    }
-
-    // --- Constants & Defaults ---
-    const createId = () => (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-    const CHARACTERS = [
-      "A.K.I.", "アルジュン", "アレックス", "イングリッド", "エド", "エドモンド本田", "エレナ", "ガイル", "キャミィ", "キンバリー", "C.ヴァイパー", "ケン", "豪鬼", "サガット", "ザンギエフ", "ジェイミー", "JP", "ジュリ", "ダルシム", "春麗", "ディージェイ", "テリー", "ブランカ", "ベガ", "舞", "マノン", "マリーザ", "ヤスミン", "ラシード", "リュウ", "リリー", "ルーク"
-    ];
-
-    const CATEGORIES = ['通常技', '特殊技', '必殺技', 'SA', '通常投げ', '共通行動'];
-    const STRENGTHS = ['弱', '中', '強', 'OD', 'その他'];
-    const COMBO_STATES = ['ノーマル', 'カウンター', 'パニカン'];
-
-    const DEFAULT_MOVES_DATA = {
-      '通常技': ['弱P', '中P', '強P', '弱K', '中K', '強K', '2弱P', '2中P', '2強P', '2弱K', '2中K', '2強K', 'j弱P', 'j中P', 'j強P', 'j弱K', 'j中K', 'j強K'],
-      'SA': ['SA1', 'SA2', 'SA3', 'CA'],
-      '通常投げ': ['前投げ', '後ろ投げ'],
-      '共通行動': ['前ステップ', 'バックステップ', 'インパクト', 'パリィ', 'ジャストパリィ', '生ラッシュ', 'Cラッシュ', '前歩き', '後ろ歩き', '前ジャンプ', '垂直', 'バックジャンプ', '何もしない']
-    };
-
-    const STRENGTH_COLORS = {
-      '弱': 'bg-cyan-200 text-cyan-900 border-cyan-300',
-      '中': 'bg-yellow-200 text-yellow-900 border-yellow-300',
-      '強': 'bg-red-400 text-red-950 border-red-500',
-      'OD': 'bg-orange-400 text-orange-950 border-orange-500',
-      'その他': 'bg-white text-gray-900 border-gray-300'
-    };
-
-    const generateDefaultMoves = () => {
-      let defaults = [];
-      Object.entries(DEFAULT_MOVES_DATA).forEach(([category, names]) => {
-        names.forEach(name => {
-          let strength = 'その他';
-          if (category === '通常技') {
-            if (name.includes('弱')) strength = '弱';
-            else if (name.includes('中')) strength = '中';
-            else if (name.includes('強')) strength = '強';
-          }
-          defaults.push({
-            id: `def_${category}_${name}`,
-            name, category, command: '', startup: '', block: '', hit: '', strength, isDefault: true
-          });
-        });
-      });
-      return defaults;
-    };
-    const ALL_DEFAULT_MOVES = generateDefaultMoves();
-    const IMPORT_STORAGE_KEY = 'fg-tool-default-moves-v1';
-    const DEFAULT_COLUMNS = ['charId', 'category', 'moveId', 'name', 'command', 'strength', 'startup', 'hit', 'block'];
-
-    const readStoredDefaultRows = () => {
-      try {
-        const raw = localStorage.getItem(IMPORT_STORAGE_KEY);
-        return raw ? normalizeDefaultRows(JSON.parse(raw)) : null;
-      } catch (error) {
-        console.warn('Unable to read local default moves:', error);
-        return null;
-      }
-    };
-
-    function normalizeDefaultRows(input) {
-      const source = Array.isArray(input) ? input : input && Array.isArray(input.moves) ? input.moves : null;
-      if (!source) throw new Error('技データは行の配列で指定してください。');
-      const seen = new Set();
-      return source.map((row, index) => {
-        const item = Object.fromEntries(DEFAULT_COLUMNS.map(key => [key, String(row?.[key] ?? '').trim()]));
-        if (!item.name) return null; // テンプレートの未入力行は無視
-        if (!CHARACTERS.includes(item.charId)) throw new Error(`${index + 2}行目: 不明なキャラクター ${item.charId}`);
-        if (!CATEGORIES.includes(item.category)) throw new Error(`${index + 2}行目: 不明なカテゴリ ${item.category}`);
-        if (!item.moveId) throw new Error(`${index + 2}行目: moveId がありません。`);
-        if (!/^[a-zA-Z0-9_-]+$/.test(item.moveId)) throw new Error(`${index + 2}行目: moveId は英数字・_・-のみ使用できます。`);
-        if (item.strength && !STRENGTHS.includes(item.strength)) throw new Error(`${index + 2}行目: 不正な強度 ${item.strength}`);
-        const key = `${item.charId}::${item.moveId}`;
-        if (seen.has(key)) throw new Error(`${index + 2}行目: moveId の重複 ${key}`);
-        seen.add(key);
-        return item;
-      }).filter(Boolean);
-    }
-
-    // Accept a flat row array, {moves:[...]}, or category-keyed data per character.
-    // Each row keeps its stable moveId; file name supplies the character identifier.
-    function normalizeCharacterJson(data, character) {
-      let rows;
-      if (Array.isArray(data)) rows = data;
-      else if (Array.isArray(data?.moves)) rows = data.moves;
-      else if (data && typeof data === 'object') {
-        rows = CATEGORIES.flatMap(category => (Array.isArray(data[category]) ? data[category] : [])
-          .map(item => ({ ...item, category })));
-      } else throw new Error('JSON形式が正しくありません。');
-      const normalized = rows.map(row => {
-        if (row.charId && row.charId !== character) {
-          throw new Error(`ファイルとキャラクターが一致しません: ${row.charId}（期待値: ${character}）`);
-        }
-        return { ...row, charId: character, moveId: row.moveId || row.id || '' };
-      });
-      return normalizeDefaultRows(normalized);
-    }
-
-    function importedDefaultMoves(rows) {
-      return rows.map(row => ({
-        id: `def_${encodeURIComponent(row.charId)}_${row.moveId}`,
-        charId: row.charId,
-        category: row.category,
-        name: row.name,
-        command: row.command,
-        strength: row.strength || 'その他',
-        startup: row.startup,
-        hit: row.hit,
-        block: row.block,
-        isDefault: true
-      }));
-    }
-
-
-    // Excel parsing is optional and loaded only when the user imports a workbook.
-    let excelLibraryPromise = null;
-    function loadExcelLibrary() {
-      if (window.XLSX) return Promise.resolve(window.XLSX);
-      if (excelLibraryPromise) return excelLibraryPromise;
-      excelLibraryPromise = new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-        script.async = true;
-        script.onload = () => window.XLSX ? resolve(window.XLSX) : reject(new Error('Excelライブラリを読み込めませんでした。'));
-        script.onerror = () => reject(new Error('Excelライブラリを読み込めませんでした。ネット接続をご確認ください。'));
-        document.head.appendChild(script);
-      }).catch(error => { excelLibraryPromise = null; throw error; });
-      return excelLibraryPromise;
-    }
-
-    // --- Components ---
-
-    function App() {
-      const [user, setUser] = useState(null);
-      const [authLoading, setAuthLoading] = useState(true);
-
-      useEffect(() => {
-        if (!auth) return;
-        
-        if (isEnvProvided && typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
-          signInWithCustomToken(auth, window.__initial_auth_token).catch(err => console.error('Custom token sign-in failed:', err));
-        }
-
-        const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-          setUser(currentUser);
-          setAuthLoading(false);
-        });
-        return () => unsubscribe();
-      }, []);
-
-      if (configError) {
-        return (
-          <div className="min-h-screen flex items-center justify-center p-4 bg-slate-900">
-            <div className="bg-red-950/80 border border-red-800 p-6 rounded-lg max-w-md text-red-200">
-              <h2 className="text-xl font-bold mb-4 flex items-center"><X className="mr-2"/> Setup Required</h2>
-              <p className="text-sm leading-relaxed">{configError}</p>
-            </div>
-          </div>
-        );
-      }
-
-      if (authLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-900 text-cyan-500 font-mono">Loading...</div>;
-
-      if (!user) {
-        return <LoginScreen auth={auth} />;
-      }
-
-      return <MainLayout db={db} user={user} appId={appId} auth={auth} />;
-    }
-
-    function LoginScreen({ auth }) {
-      const [email, setEmail] = useState('');
-      const [password, setPassword] = useState('');
-      const [loading, setLoading] = useState(false);
-      const [error, setError] = useState('');
-
-      const handleAccount = async (e) => {
-        e.preventDefault();
-        const normalizedEmail = email.trim().toLowerCase();
-        if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-          setError('有効なメールアドレスを入力してください。'); return;
-        }
-        if (password.length < 6) { setError('パスワードは6文字以上にしてください。'); return; }
-        setLoading(true); setError('');
-        try {
-          try {
-            await signInWithEmailAndPassword(auth, normalizedEmail, password);
-          } catch (signInError) {
-            if (signInError.code === 'auth/user-not-found' || signInError.code === 'auth/invalid-credential' || signInError.code === 'auth/invalid-login-credentials') {
-              await createUserWithEmailAndPassword(auth, normalizedEmail, password);
-            } else {
-              throw signInError;
-            }
-          }
-        } catch (err) {
-          const messages = {
-            'auth/email-already-in-use': 'このメールアドレスは既に使用されています。パスワードを確認してください。',
-            'auth/weak-password': 'パスワードは6文字以上にしてください。',
-            'auth/invalid-email': 'メールアドレスの形式が正しくありません。',
-            'auth/network-request-failed': 'ネットワークに接続できませんでした。'
-          };
-          setError(messages[err.code] || `認証に失敗しました: ${err.message}`);
-        } finally { setLoading(false); }
-      };
-
-      const handleAnonymous = async () => {
-        setLoading(true); setError('');
-        try { await signInAnonymously(auth); }
-        catch (err) { setError(`ゲストログインに失敗しました: ${err.message}`); }
-        finally { setLoading(false); }
-      };
-
-      return (
-        <div className="min-h-screen flex items-center justify-center bg-slate-900 p-4 font-sans text-slate-200">
-          <div className="bg-slate-950 border border-slate-800 p-6 md:p-8 rounded-xl shadow-2xl max-w-md w-full">
-            <h1 className="mb-6 text-center leading-tight"><span className="block text-sm font-medium text-slate-400">Street Fighter 6 memo tool</span><span className="block mt-1 text-3xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">SF6 Lab.</span></h1>
-            <p className="text-sm text-slate-400 mb-6 text-center leading-relaxed">複数端末でデータを同期するには、同じメールアドレスとパスワードを使用してください。初回はアカウントが作成されます。</p>
-            <form onSubmit={handleAccount} className="space-y-4">
-              <input type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="メールアドレス" className="w-full bg-slate-900 border border-slate-700 rounded-md px-4 py-3 text-white focus:outline-none focus:border-cyan-500" disabled={loading} required />
-              <input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} placeholder="パスワード（6文字以上）" className="w-full bg-slate-900 border border-slate-700 rounded-md px-4 py-3 text-white focus:outline-none focus:border-cyan-500" disabled={loading} required minLength={6} />
-              {error && <p role="alert" className="text-red-400 text-xs text-center">{error}</p>}
-              <button type="submit" disabled={loading} className="w-full py-3 rounded-md text-sm font-bold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors shadow-lg shadow-cyan-900/20 disabled:opacity-50">{loading ? 'Connecting...' : 'ログイン / 新規登録'}</button>
-            </form>
-            <div className="mt-6 border-t border-slate-800 pt-6">
-              <button onClick={handleAnonymous} disabled={loading} className="w-full py-3 rounded-md text-sm font-medium text-slate-400 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 transition-colors disabled:opacity-50">ゲストとして開始</button>
-              <p className="text-xs text-slate-500 text-center mt-3">※ゲスト利用もFirebaseにクラウド保存されます。別端末への引き継ぎにはメールアドレスでの登録を利用してください。</p>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    function MainLayout({ db, user, appId, auth }) {
-      const [activeTab, setActiveTab] = useState('data');
-      const [notesTab, setNotesTab] = useState('offense');
-      const [selectedChar, setSelectedChar] = useState(CHARACTERS[0]);
-      
-      const [allMoves, setAllMoves] = useState([]);
-      // Repository layout: index.html and moves/キャラクター名.json share a Pages root.
-      // Local Excel imports, when present, take precedence for their categories.
-      const [importedRows, setImportedRows] = useState(readStoredDefaultRows);
-      const [publishedByChar, setPublishedByChar] = useState({});
-      useEffect(() => {
-        let cancelled = false;
-        const character = selectedChar;
-        if (publishedByChar[character]) return;
-        const url = new URL(`./moves/${encodeURIComponent(character)}.json`, document.baseURI);
-        fetch(url.href, { cache: 'no-cache' })
-          .then(async response => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}: ${character}.json`);
-            const data = await response.json();
-            return normalizeCharacterJson(data, character);
-          })
-          .then(rows => {
-            if (!cancelled) setPublishedByChar(prev => ({ ...prev, [character]: { rows, error: null } }));
-          })
-          .catch(error => {
-            console.warn('Published move data unavailable:', url.href, error);
-            if (!cancelled) setPublishedByChar(prev => ({ ...prev, [character]: { rows: [], error: error.message } }));
-          });
-        return () => { cancelled = true; };
-      }, [selectedChar, publishedByChar[selectedChar] === undefined]);
-      const handleImportDefaultRows = (rows) => {
-        const parsed = normalizeDefaultRows(rows);
-        localStorage.setItem(IMPORT_STORAGE_KEY, JSON.stringify(parsed));
-        setImportedRows(parsed);
-        return parsed.length;
-      };
-      const [allMemos, setAllMemos] = useState([]);
-      const [allFolders, setAllFolders] = useState([]);
-      const [allCards, setAllCards] = useState([]);
-
-      const [optimistic, setOptimistic] = useState({});
-      const pendingWritesRef = useRef(new Map());
-      const deletedCardsRef = useRef(new Set());
-      const optimisticVersionRef = useRef(0);
-      const [cloudStatus, setCloudStatus] = useState('saved');
-      const activeSavesRef = useRef(0);
-      const saveErrorRef = useRef(false);
-      const stagedCardsRef = useRef(new Set());
-      // The status reflects all Firestore writes dispatched through the application.
-      const trackCloudWrite = (task) => {
-        activeSavesRef.current += 1;
-        setCloudStatus('saving');
-        return Promise.resolve(task).then(
-          result => {
-            activeSavesRef.current -= 1;
-            if (activeSavesRef.current === 0) {
-              setCloudStatus(saveErrorRef.current ? 'failed' : stagedCardsRef.current.size ? 'saving' : 'saved');
-            }
-            return result;
-          },
-          error => {
-            activeSavesRef.current -= 1;
-            saveErrorRef.current = true;
-            setCloudStatus(activeSavesRef.current === 0 ? 'failed' : 'saving');
-            throw error;
-          }
-        );
-      };
-      const applyLocalWrite = (name, reference, data, mode = 'set') => {
-        // A card removed with its memo/folder must not be recreated by a pending editor flush.
-        if (name === 'cards') {
-          stagedCardsRef.current.delete(reference.id);
-          if (mode === 'delete') deletedCardsRef.current.add(reference.id);
-          else if (mode === 'set') deletedCardsRef.current.delete(reference.id);
-          else if (deletedCardsRef.current.has(reference.id)) return reference.id;
-        }
-        const key = `${name}/${reference.id}`;
-        const version = ++optimisticVersionRef.current;
-        setOptimistic(prev => ({ ...prev, [key]: { version, mode, data } }));
-        // Firestore supplies local latency compensation, while this overlay
-        // keeps the change visible even when a tab/character is switched.
-        const previous = pendingWritesRef.current.get(key) || Promise.resolve();
-        // A new user edit clears the previous failure indicator only after a
-        // successful save; pending writes are counted even when queued.
-        if (activeSavesRef.current === 0) saveErrorRef.current = false;
-        const write = trackCloudWrite(previous.catch(() => {}).then(() =>
-          mode === 'delete' ? deleteDoc(reference) :
-          mode === 'update' ? updateDoc(reference, data) : setDoc(reference, data)
-        ));
-        pendingWritesRef.current.set(key, write);
-        void write.then(() => {
-          setOptimistic(prev => {
-            if (prev[key]?.version !== version) return prev;
-            const next = { ...prev }; delete next[key]; return next;
-          });
-        }).catch(error => {
-          console.error('Cloud save failed:', name, reference.id, error);
-          setOptimistic(prev => {
-            if (prev[key]?.version !== version) return prev;
-            const next = { ...prev }; delete next[key]; return next;
-          });
-          alert(`クラウドへの保存に失敗しました (${name}): ${error.message}`);
-        }).finally(() => {
-          if (pendingWritesRef.current.get(key) === write) pendingWritesRef.current.delete(key);
-        });
-        return reference.id;
-      };
-      const stageCard = (cardId, blocks) => {
-        if (deletedCardsRef.current.has(cardId)) return;
-        stagedCardsRef.current.add(cardId);
-        setCloudStatus('saving');
-        const key = `cards/${cardId}`;
-        const version = ++optimisticVersionRef.current;
-        setOptimistic(prev => ({ ...prev, [key]: { version, mode: 'update', data: { blocks } } }));
-      };
-      const overlayCollection = (name, items) => {
-        const result = new Map(items.map(item => [item.id, item]));
-        Object.entries(optimistic).forEach(([key, change]) => {
-          if (!key.startsWith(`${name}/`)) return;
-          const id = key.slice(name.length + 1);
-          if (change.mode === 'delete') result.delete(id);
-          else result.set(id, { ...(result.get(id) || {}), ...change.data, id });
-        });
-        return [...result.values()];
-      };
-      const visibleMoves = overlayCollection('moves', allMoves);
-      const visibleMemos = overlayCollection('memos', allMemos);
-      const visibleFolders = overlayCollection('folders', allFolders);
-      const visibleCards = overlayCollection('cards', allCards);
-
-      useEffect(() => {
-        if (!user) return;
-        const subscriptions = [
-          ['moves', setAllMoves],
-          ['memos', setAllMemos],
-          ['folders', setAllFolders],
-          ['cards', setAllCards]
-        ].map(([name, setter]) => onSnapshot(
-          collection(db, 'artifacts', appId, 'users', user.uid, name),
-          snapshot => setter(snapshot.docs.map(item => ({ ...item.data(), id: item.id }))),
-          error => console.error(`${name} listener error:`, error)
-        ));
-        return () => subscriptions.forEach(unsubscribe => unsubscribe());
-      }, [db, user.uid, appId]);
-
-      const currentMoves = useMemo(() => {
-        const customMovesForChar = visibleMoves.filter(m => m.charId === selectedChar);
-        const merged = [];
-        const publishedForChar = importedDefaultMoves(publishedByChar[selectedChar]?.rows || []);
-        const localForChar = importedRows ? importedDefaultMoves(importedRows.filter(r => r.charId === selectedChar)) : [];
-        const localCategories = new Set(localForChar.map(m => m.category));
-        const publishedCategories = new Set(publishedForChar.map(m => m.category));
-        const overriddenCategories = new Set([...localCategories, ...publishedCategories]);
-        const activeDefaults = [
-          ...ALL_DEFAULT_MOVES.filter(def => !overriddenCategories.has(def.category)),
-          ...publishedForChar.filter(def => !localCategories.has(def.category)),
-          ...localForChar
-        ];
-        activeDefaults.forEach(def => {
-          const override = customMovesForChar.find(m => m.overrideId === def.id);
-          if (override) merged.push({ ...override, isDefaultOverride: true });
-          else merged.push(def);
-        });
-        const customOnly = customMovesForChar.filter(m => !m.overrideId);
-        return [...merged, ...customOnly];
-      }, [visibleMoves, selectedChar, importedRows, publishedByChar]);
-
-      return (
-        <div className="h-screen flex flex-col bg-slate-900 text-slate-200 font-sans overflow-hidden">
-          <header className="flex-none h-14 bg-slate-950 border-b border-slate-800 flex items-center justify-between px-4 shrink-0">
-            <div className="flex items-center h-full">
-              <h1 className="flex flex-col justify-center leading-tight mr-3 md:mr-6 shrink-0"><span className="text-[10px] md:text-xs font-medium text-slate-400 whitespace-nowrap">Street Fighter 6 memo tool</span><span className="text-lg md:text-xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">SF6 Lab.</span></h1>
-              <nav className="flex space-x-1 md:space-x-2 h-full items-end">
-                <TabButton active={activeTab === 'data'} onClick={() => setActiveTab('data')} icon={<Book size={16} />} label="Data" />
-                <TabButton active={activeTab === 'offense'} onClick={() => { if (activeTab !== 'offense') { setNotesTab('offense'); setActiveTab('offense'); } }} icon={<Sword size={16} />} label="Offense" />
-                <TabButton active={activeTab === 'defense'} onClick={() => { if (activeTab !== 'defense') { setNotesTab('defense'); setActiveTab('defense'); } }} icon={<Shield size={16} />} label="Defense" />
-              </nav>
-            </div>
-            <div className="flex items-center space-x-2">
-              <div role="status" aria-live="polite" className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs font-semibold ${cloudStatus === 'failed' ? 'border-red-700 bg-red-950/60 text-red-300' : cloudStatus === 'saving' ? 'border-amber-700 bg-amber-950/40 text-amber-300' : 'border-emerald-800 bg-emerald-950/40 text-emerald-300'}`}>
-                <span className={`h-2 w-2 rounded-full ${cloudStatus === 'failed' ? 'bg-red-400' : cloudStatus === 'saving' ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'}`} />
-                {cloudStatus === 'saving' ? 'Saving...' : cloudStatus === 'failed' ? 'Save Failed' : 'Saved'}
-              </div>
-              <button onClick={() => auth.signOut()} className="flex items-center text-xs text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 px-2.5 py-1.5 rounded-md border border-slate-800 transition-colors" title="ログアウト">
-                <LogOut size={14} className="mr-1.5 md:mr-0" />
-                <span className="hidden md:inline ml-1.5">Logout</span>
-              </button>
-            </div>
-          </header>
-
-          <div className="flex flex-1 overflow-hidden">
-            <aside className="w-24 md:w-48 flex-none min-h-0 bg-slate-950 border-r border-slate-800 flex flex-col overflow-hidden">
-              <div className="p-3 border-b border-slate-800 sticky top-0 bg-slate-950/90 backdrop-blur z-10 hidden md:block">
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Characters</span>
-              </div>
-              <div className="character-scroll flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 pr-1 space-y-1">
-                {CHARACTERS.map(char => (
-                  <button
-                    key={char}
-                    onClick={() => { if (selectedChar !== char) setSelectedChar(char); }}
-                    className={`w-full text-left px-2 md:px-3 py-2 rounded-md text-xs md:text-sm font-medium transition-colors ${
-                      selectedChar === char 
-                        ? 'bg-cyan-900 text-cyan-400 border border-cyan-700' 
-                        : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200 border border-transparent'
-                    }`}
-                  >
-                    <span className="truncate block">{char}</span>
-                  </button>
-                ))}
-              </div>
-            </aside>
-            <main className="flex-1 flex flex-col min-w-0 overflow-hidden bg-slate-900">
-              <div className={activeTab === 'data' ? 'hidden h-full' : 'flex flex-1 min-h-0'}>
-                <NotesView tab={notesTab} charName={selectedChar} applyLocalWrite={applyLocalWrite}
-                  memos={visibleMemos.filter(m => m.charId === selectedChar && m.tab === notesTab)}
-                  allFolders={visibleFolders} allCards={visibleCards} moves={currentMoves} stageCard={stageCard} db={db} user={user} appId={appId} />
-              </div>
-              {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} importedRows={importedRows} publishedInfo={publishedByChar[selectedChar]} onImportDefaults={handleImportDefaultRows} applyLocalWrite={applyLocalWrite} db={db} user={user} appId={appId} />}
-            </main>
-          </div>
-        </div>
-      );
-    }
-
-    function TabButton({ active, onClick, icon, label }) {
-      return (
-        <button
-          onClick={onClick}
-          className={`flex items-center space-x-1.5 px-3 py-2 rounded-t-lg text-sm font-medium transition-all ${
-            active 
-              ? 'bg-slate-900 text-cyan-400 border-t border-l border-r border-slate-800 -mb-px' 
-              : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'
-          }`}
-        >
-          {icon}
-          <span className="hidden sm:inline">{label}</span>
-        </button>
-      );
-    }
-
-    function Modal({ isOpen, onClose, title, children, maxWidth = 'max-w-md' }) {
-      if (!isOpen) return null;
-      return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className={`bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full ${maxWidth} max-h-[90vh] flex flex-col`}>
-            <div className="flex justify-between items-center p-4 border-b border-slate-800 shrink-0">
-              <h2 className="text-lg font-semibold text-slate-100">{title}</h2>
-              <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors p-1"><X size={20} /></button>
-            </div>
-            <div className="p-4 overflow-y-auto">{children}</div>
-          </div>
-        </div>
-      );
-    }
-
-    // --- Data Tab ---
-    function DataView({ charName, moves, db, user, appId, applyLocalWrite, importedRows, publishedInfo, onImportDefaults }) {
-      const [activeCategory, setActiveCategory] = useState(CATEGORIES[0]);
-      const [editingMove, setEditingMove] = useState(null);
-      const importInputRef = useRef(null);
-      const [importMessage, setImportMessage] = useState('');
-      const importWorkbook = async event => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-        try {
-          const XLSX = await loadExcelLibrary();
-          const binary = await file.arrayBuffer();
-          const workbook = XLSX.read(binary, { type: 'array' });
-          const sheet = workbook.Sheets['技データ'] || workbook.Sheets[workbook.SheetNames[0]];
-          if (!sheet) throw new Error('技データシートがありません。');
-          const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
-          const total = onImportDefaults(rows);
-          setImportMessage(`${total}件の技を取り込みました（このブラウザに保存）。キャラクターを選択してExport JSONを押すと、キャラクター名.jsonを出力できます。`);
-        } catch (error) {
-          console.error('Move import failed:', error);
-          setImportMessage(`取り込み失敗: ${error.message}`);
-          alert(`Excelを読み込めませんでした: ${error.message}`);
-        } finally {
-          event.target.value = '';
-        }
-      };
-      const exportDefaultJson = () => {
-        const localRows = importedRows?.filter(row => row.charId === charName) || [];
-        const categories = new Set(localRows.map(row => row.category));
-        const rows = [
-          ...(publishedInfo?.rows || []).filter(row => !categories.has(row.category)),
-          ...localRows
-        ];
-        if (!rows.length) {
-          setImportMessage(`${charName}のエクスポート対象データがありません。先にExcelを取り込んでください。`);
-          return;
-        }
-        const payload = JSON.stringify(rows, null, 2);
-        const url = URL.createObjectURL(new Blob([payload], { type: 'application/json;charset=utf-8' }));
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${charName}.json`;
-        document.body.appendChild(link);
-        link.click(); link.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        setImportMessage(`${charName}.json を出力しました。GitHubのmoves/フォルダーへ配置してください。`);
-      };
-
-
-      const displayedMoves = useMemo(() => {
-        return moves.filter(m => m.category === activeCategory);
-      }, [moves, activeCategory]);
-
-      const handleSaveMove = (moveData) => {
-        const payload = { ...moveData };
-        const isNewCustom = !payload.id;
-        const isDefaultEdit = payload.isDefault === true;
-        let reference;
-        if (isDefaultEdit) {
-          reference = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'moves'));
-          payload.overrideId = payload.id;
-          delete payload.isDefault;
-          delete payload.id;
-        } else if (isNewCustom) {
-          reference = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'moves'));
-        } else {
-          reference = doc(db, 'artifacts', appId, 'users', user.uid, 'moves', payload.id);
-        }
-        applyLocalWrite('moves', reference, {
-          ...payload, charId: charName,
-          category: payload.category || activeCategory, id: reference.id
-        });
-        setEditingMove(null);
-      };
-
-      const handleDeleteCustomMove = async (moveId) => {
-        if (!moveId) return;
-        try {
-          applyLocalWrite('moves', doc(db, 'artifacts', appId, 'users', user.uid, 'moves', moveId), null, 'delete');
-          setEditingMove(null);
-        } catch (err) {
-          console.error("Error deleting move:", err);
-          alert(`技データを削除できませんでした: ${err.message}`);
-        }
-      };
-
-      return (
-        <div className="flex flex-col h-full">
-          <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-800 shrink-0">
-            <input ref={importInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={importWorkbook} />
-            <button onClick={() => importInputRef.current?.click()} className="px-3 py-1.5 text-xs font-bold rounded bg-cyan-800 hover:bg-cyan-700 text-white">Import Excel</button>
-            <button onClick={exportDefaultJson} disabled={!importedRows?.some(row => row.charId === charName) && !publishedInfo?.rows?.length} className="px-3 py-1.5 text-xs rounded border border-slate-600 disabled:opacity-40 hover:bg-slate-800">Export JSON</button>
-            {importMessage && <span className="text-xs text-cyan-300 break-words">{importMessage}</span>}
-          </div>
-          {/* Category Tabs */}
-          <div className="flex overflow-x-auto bg-slate-950 border-b border-slate-800 shrink-0 p-2 space-x-1">
-            {CATEGORIES.map(cat => (
-              <button
-                key={cat}
-                onClick={() => setActiveCategory(cat)}
-                className={`px-4 py-1.5 rounded-full text-sm whitespace-nowrap transition-colors ${
-                  activeCategory === cat ? 'bg-cyan-900/50 text-cyan-300 border border-cyan-800/50' : 'text-slate-400 hover:bg-slate-800'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
-
-          {/* Main Content (Moves Grid) */}
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-900/50">
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-              {displayedMoves.map((move) => (
-                <MoveTile 
-                  key={move.id} 
-                  move={move} 
-                  onClick={() => setEditingMove(move)} 
-                />
-              ))}
-              
-              {/* Add New Move Button */}
-              <button
-                onClick={() => setEditingMove({ category: activeCategory, name: '', command: '', startup: '', block: '', hit: '', strength: 'その他' })}
-                className="flex flex-col items-center justify-center min-h-[100px] rounded-xl border-2 border-dashed border-slate-700 hover:border-cyan-500 hover:bg-slate-800/50 transition-all text-slate-500 hover:text-cyan-400 cursor-pointer"
-              >
-                <Plus size={24} className="mb-1" />
-                <span className="text-sm font-medium">Add Move</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Move Editor Modal */}
-          <MoveEditorModal 
-            move={editingMove} 
-            isOpen={!!editingMove} 
-            onClose={() => setEditingMove(null)} 
-            onSave={handleSaveMove}
-            onDelete={handleDeleteCustomMove}
-          />
-        </div>
-      );
-    }
-
-    function MoveTile({ move, onClick, minimal = false }) {
-      const colorClass = move.category === 'SA' || /^(?:SA[123]?|CA)$/i.test(String(move.name || '').trim())
-        ? 'bg-purple-300 text-purple-950 border-purple-400'
-        : (STRENGTH_COLORS[move.strength] || STRENGTH_COLORS['その他']);
-      if (minimal) {
-        return (
-          <div className={`px-2 py-1 rounded text-xs font-bold border shadow-sm ${colorClass} inline-flex items-center justify-center min-w-[3rem]`}>
-            {move.name}
-          </div>
-        );
-      }
-      return (
-        <div onClick={onClick} className={`relative flex flex-col rounded-xl border-b-4 shadow-md cursor-pointer hover:brightness-110 active:scale-95 transition-all overflow-hidden ${colorClass} min-h-[100px]`}>
-          <div className="px-2 py-1.5 bg-black/10 border-b border-black/10 font-bold text-sm flex justify-between items-center">
-            <span className="truncate" title={move.name}>{move.name || 'Unnamed'}</span>
-            {move.command && <span className="text-[10px] opacity-70 ml-1 font-mono bg-black/10 px-1 rounded whitespace-nowrap">{move.command}</span>}
-          </div>
-          <div className="flex-1 p-2 grid grid-cols-3 gap-x-2 text-xs items-center">
-            <div className="flex flex-col min-w-0"><span className="opacity-60 text-[10px] leading-tight">発生</span><span className="font-semibold whitespace-nowrap">{move.startup || '-'}</span></div>
-            <div className="flex flex-col min-w-0"><span className="opacity-60 text-[10px] leading-tight">ガード</span><span className="font-semibold whitespace-nowrap">{move.block || '-'}</span></div>
-            <div className="flex flex-col min-w-0"><span className="opacity-60 text-[10px] leading-tight">ヒット</span><span className="font-semibold whitespace-nowrap">{move.hit || '-'}</span></div>
-          </div>
-        </div>
-      );
-    }
-
-    function splitFrameValue(rawValue) {
-      const raw = String(rawValue ?? '').trim();
-      if (!raw) return { sign: '', value: '' };
-      const match = raw.match(/^([+-])(.*)$/);
-      return match ? { sign: match[1], value: match[2] } : { sign: '', value: raw };
-    }
-
-    function FrameInput({ label, name, value, onChange }) {
-      const parsed = splitFrameValue(value);
-      // Clicking the currently selected sign again clears the sign.
-      const setSign = (sign) => {
-        const nextSign = parsed.sign === sign ? '' : sign;
-        onChange(name, `${nextSign}${parsed.value}`);
-      };
-      const setNumber = (nextValue) => onChange(name, nextValue === '' ? '' : `${parsed.sign}${nextValue}`);
-      return (
-        <div className="min-w-0">
-          <label className="block text-xs font-medium text-slate-400 mb-1">{label}</label>
-          <div className="flex items-center gap-1">
-            <div className="flex shrink-0 rounded-md overflow-hidden border border-slate-700">
-              {['+', '-'].map(sign => (
-                <button type="button" key={sign} onClick={() => setSign(sign)}
-                  aria-pressed={parsed.sign === sign}
-                  title={parsed.sign === sign ? 'もう一度押すと符号なしになります' : `${sign}を選択`}
-                  className={`px-3 py-2 text-sm font-bold ${parsed.sign === sign ? 'bg-cyan-700 text-white' : 'bg-slate-950 text-slate-400 hover:text-white'}`}>{sign}</button>
-              ))}
-            </div>
-            <input type="text" inputMode="text" value={parsed.value}
-              onChange={e => setNumber(e.target.value)}
-              className="min-w-0 w-full bg-slate-950 border border-slate-700 rounded-md px-2 py-2 text-white focus:outline-none focus:border-cyan-500"
-              placeholder="数値" />
-          </div>
-        </div>
-      );
-    }
-
-    function MoveEditorModal({ move, isOpen, onClose, onSave, onDelete }) {
-      const [formData, setFormData] = useState({});
-      const [isSaving, setIsSaving] = useState(false);
-      const submitMove = async () => {
-        if (isSaving || !formData.name?.trim()) return;
-        setIsSaving(true);
-        try { await onSave({ ...formData, name: formData.name.trim() }); }
-        finally { setIsSaving(false); }
-      };
-      useEffect(() => { if (move) setFormData({ ...move }); }, [move]);
-
-      if (!isOpen || !move) return null;
-      const handleChange = (e) => setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
-      const handleFrameChange = (name, value) => setFormData(prev => ({ ...prev, [name]: value }));
-      const isCustomOrOverride = Boolean(formData.id && !formData.isDefault);
-
-      return (
-        <Modal isOpen={isOpen} onClose={onClose} title="Edit Move">
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Name</label>
-                <input type="text" name="name" value={formData.name || ''} onChange={handleChange}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="技名" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Command</label>
-                <input type="text" name="command" value={formData.command || ''} onChange={handleChange}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="コマンド" />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-400 mb-2">Strength</label>
-              <div className="grid grid-cols-5 gap-2">
-                {STRENGTHS.map(strength => (
-                  <button type="button" key={strength} onClick={() => setFormData(prev => ({ ...prev, strength }))}
-                    className={`rounded-md border px-2 py-2 text-sm font-bold transition-colors ${STRENGTH_COLORS[strength]} ${formData.strength === strength ? 'ring-2 ring-cyan-400 ring-offset-2 ring-offset-slate-900' : 'opacity-60 hover:opacity-100'}`}>
-                    {strength}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2">
-              <div className="min-w-0">
-                <label className="block text-xs font-medium text-slate-400 mb-1">発生</label>
-                <input type="text" inputMode="numeric" name="startup" value={formData.startup || ''} onChange={handleChange}
-                  className="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-md px-2 py-2 text-white focus:outline-none focus:border-cyan-500"
-                  placeholder="数値" />
-              </div>
-              <FrameInput label="ガード" name="block" value={formData.block || ''} onChange={handleFrameChange} />
-              <FrameInput label="ヒット" name="hit" value={formData.hit || ''} onChange={handleFrameChange} />
-            </div>
-
-            <div className="pt-4 flex justify-between items-center border-t border-slate-800 mt-6">
-              {isCustomOrOverride ? (
-                <button onClick={() => onDelete(formData.id)} className="text-red-400 hover:text-red-300 flex items-center text-sm px-2 py-1 rounded hover:bg-red-950/30 transition-colors"><Trash2 size={16} className="mr-1" /> Delete</button>
-              ) : <div />}
-              <div className="flex space-x-2">
-                <button onClick={onClose} className="px-4 py-2 rounded-md text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">Cancel</button>
-                <button onClick={submitMove} disabled={!formData.name?.trim() || isSaving}
-                  className="flex items-center px-4 py-2 rounded-md text-sm font-bold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors shadow-lg shadow-cyan-900/20 disabled:opacity-50"><Save size={16} className="mr-2" /> {isSaving ? 'Saving...' : 'Save'}</button>
-              </div>
-            </div>
-          </div>
-        </Modal>
-      );
-    }
-
-    // --- Notes Tab ---
-    function NotesView({ tab, charName, memos, allFolders, allCards, moves, db, user, appId, applyLocalWrite, stageCard }) {
-      const [selectedMemoId, setSelectedMemoId] = useState(null);
-      const [creatingType, setCreatingType] = useState(null);
-      const [newItemTitle, setNewItemTitle] = useState('');
-      const [isCreating, setIsCreating] = useState(false);
-      const [deleteTarget, setDeleteTarget] = useState(null);
-      const [editingId, setEditingId] = useState(null);
-      const [editValue, setEditValue] = useState('');
-      const dragItemRef = useRef(null);
-      const [dragOverTarget, setDragOverTarget] = useState(null);
-      const pendingMemoSelectionRef = useRef(null);
-
-      const currentFolders = useMemo(() => allFolders.filter(f => f.charId === charName && f.tab === tab).sort((a,b) => (a.order || 0) - (b.order || 0)), [allFolders, charName, tab]);
-      const currentMemos = useMemo(() => [...memos].sort((a,b) => (a.order || 0) - (b.order || 0)), [memos]);
-
-      useEffect(() => {
-        const pendingId = pendingMemoSelectionRef.current;
-        if (pendingId) {
-          if (currentMemos.some(memo => memo.id === pendingId)) {
-            setSelectedMemoId(pendingId);
-            pendingMemoSelectionRef.current = null;
-          }
-          return;
-        }
-        const selectionStillExists = currentMemos.some(memo => memo.id === selectedMemoId);
-        if (!selectionStillExists) setSelectedMemoId(currentMemos[0]?.id || null);
-      }, [currentMemos, selectedMemoId]); 
-
-      const openCreateModal = (type) => {
-        setNewItemTitle('');
-        setCreatingType(type);
-      };
-
-      const handleCreate = () => {
-        if (!newItemTitle.trim() || isCreating) return;
-        const title = newItemTitle.trim();
-        if (creatingType === 'folder') {
-          const reference = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'folders'));
-          applyLocalWrite('folders', reference, { charId: charName, tab, title, order: currentFolders.length });
-        } else if (creatingType && creatingType.type === 'memo') {
-          const folderId = creatingType.folderId;
-          const order = currentMemos.filter(m => m.folderId === folderId).length;
-          const reference = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'memos'));
-          pendingMemoSelectionRef.current = reference.id;
-          applyLocalWrite('memos', reference, { charId: charName, tab, title, folderId, order });
-        } else return;
-        setCreatingType(null);
-        setNewItemTitle('');
-      };
-
-      const handleRename = async (collectionName, id) => {
-        if (editingId !== id) return;
-        const title = editValue.trim();
-        setEditingId(null); // Enter and blur can otherwise save the same rename twice.
-        const items = collectionName === 'folders' ? currentFolders : currentMemos;
-        if (!title || title === items.find(item => item.id === id)?.title) return;
-        try {
-          applyLocalWrite(collectionName, doc(db, 'artifacts', appId, 'users', user.uid, collectionName, id), { title }, 'update');
-        } catch (error) {
-          console.error('Rename failed:', error);
-          alert(`名前の変更に失敗しました: ${error.message}`);
-        }
-      };
-
-      // Show our own confirmation dialog (window.confirm can be blocked in embedded browsers).
-      const handleDeleteMemo = (memo) => setDeleteTarget({ type: 'memo', item: memo });
-      const handleDeleteFolder = (folder) => setDeleteTarget({ type: 'folder', item: folder });
-
-      const confirmDeletion = () => {
-        if (!deleteTarget) return;
-        const { type, item } = deleteTarget;
-        // Resolve descendants before staging deletes, to avoid losing their IDs.
-        const affectedMemos = type === 'folder'
-          ? currentMemos.filter(memo => memo.folderId === item.id)
-          : [item];
-        const affectedMemoIds = new Set(affectedMemos.map(memo => memo.id));
-        const affectedCards = allCards.filter(card => affectedMemoIds.has(card.memoId));
-        // These updates are immediate for the UI and queued for Firestore in order.
-        // Avoid awaiting network acknowledgements before closing the dialog.
-        affectedCards.forEach(card => applyLocalWrite(
-          'cards', doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id), null, 'delete'
-        ));
-        affectedMemos.forEach(memo => applyLocalWrite(
-          'memos', doc(db, 'artifacts', appId, 'users', user.uid, 'memos', memo.id), null, 'delete'
-        ));
-        if (type === 'folder') applyLocalWrite(
-          'folders', doc(db, 'artifacts', appId, 'users', user.uid, 'folders', item.id), null, 'delete'
-        );
-        if (affectedMemoIds.has(selectedMemoId)) setSelectedMemoId(null);
-        if (pendingMemoSelectionRef.current && affectedMemoIds.has(pendingMemoSelectionRef.current)) {
-          pendingMemoSelectionRef.current = null;
-        }
-        setDeleteTarget(null);
-      };
-
-      const moveCard = async (card, direction) => {
-        const index = currentCards.findIndex(item => item.id === card.id);
-        const nextIndex = index + direction;
-        if (index < 0 || nextIndex < 0 || nextIndex >= currentCards.length) return;
-        const reordered = [...currentCards];
-        [reordered[index], reordered[nextIndex]] = [reordered[nextIndex], reordered[index]];
-        try {
-          reordered.forEach((item, order) => applyLocalWrite('cards', doc(db, 'artifacts', appId, 'users', user.uid, 'cards', item.id), { order }, 'update'));
-        } catch (err) { console.error('Card reorder failed:', err); alert(`カードの並べ替えに失敗しました: ${err.message}`); }
-      };
-
-      // Keep drag payload in a ref: React state updates are asynchronous and
-      // dragend can fire before the drop handler observes a state update.
-      const handleDragStart = (e, type, item) => {
-        const payload = { type, id: item.id, folderId: item.folderId ?? null };
-        dragItemRef.current = payload;
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('application/x-fg-sidebar', JSON.stringify(payload));
-        e.dataTransfer.setData('text/plain', item.id);
-      };
-      const handleDragEnd = () => {
-        dragItemRef.current = null;
-        setDragOverTarget(null);
-      };
-      const handleDragOver = (e, targetKey) => {
-        e.preventDefault();
-        e.stopPropagation();
-        e.dataTransfer.dropEffect = 'move';
-        setDragOverTarget(previous => previous === targetKey ? previous : targetKey);
-      };
-      const handleDrop = (e, targetType, targetId, targetFolderId = null) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setDragOverTarget(null);
-        let dragged = dragItemRef.current;
-        if (!dragged) {
-          try { dragged = JSON.parse(e.dataTransfer.getData('application/x-fg-sidebar')); }
-          catch { return; }
-        }
-        dragItemRef.current = null;
-        if (!dragged || (dragged.type === targetType && dragged.id === targetId)) return;
-        const updateOrder = (collectionName, item, changes) => {
-          const reference = doc(db, 'artifacts', appId, 'users', user.uid, collectionName, item.id);
-          applyLocalWrite(collectionName, reference, changes, 'update');
-        };
-        if (dragged.type === 'folder' && targetType === 'folder') {
-          const sorted = [...currentFolders];
-          const from = sorted.findIndex(folder => folder.id === dragged.id);
-          const to = sorted.findIndex(folder => folder.id === targetId);
-          if (from < 0 || to < 0) return;
-          // Insert at the original target index (no extra decrement).
-          const [moving] = sorted.splice(from, 1);
-          sorted.splice(to, 0, moving);
-          sorted.forEach((folder, order) => {
-            if (folder.order !== order) updateOrder('folders', folder, { order });
-          });
-          return;
-        }
-        if (dragged.type !== 'memo') return;
-        const moving = currentMemos.find(memo => memo.id === dragged.id);
-        if (!moving) return;
-        const destinationId = targetType === 'root' ? null :
-          targetType === 'folder' ? targetId :
-          targetType === 'memo' ? (targetFolderId ?? null) : undefined;
-        if (destinationId === undefined) return;
-        const sourceId = moving.folderId ?? null;
-        const destination = currentMemos.filter(memo => (memo.folderId ?? null) === destinationId && memo.id !== moving.id);
-        let insertAt = targetType === 'memo' ? destination.findIndex(memo => memo.id === targetId) : destination.length;
-        if (insertAt < 0) insertAt = destination.length;
-        destination.splice(insertAt, 0, moving);
-        // Re-index both old and new folders so future drops have stable positions.
-        if (sourceId !== destinationId) {
-          const source = currentMemos.filter(memo => (memo.folderId ?? null) === sourceId && memo.id !== moving.id);
-          source.forEach((memo, order) => {
-            if (memo.order !== order) updateOrder('memos', memo, { order });
-          });
-        }
-        destination.forEach((memo, order) => {
-          if (memo.order !== order || (memo.folderId ?? null) !== destinationId)
-            updateOrder('memos', memo, { folderId: destinationId, order });
-        });
-      };
-
-      const currentCards = useMemo(() => allCards.filter(c => c.memoId === selectedMemoId).sort((a, b) => (a.order || 0) - (b.order || 0)), [allCards, selectedMemoId]);
-
-      const handleAddCard = () => {
-        if (!selectedMemoId) return;
-        try {
-          const reference = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'cards'));
-          applyLocalWrite('cards', reference, {
-            memoId: selectedMemoId,
-            blocks: [{ id: createId(), type: 'text', content: '' }],
-            order: currentCards.length
-          });
-        } catch (err) {
-          console.error('Card creation failed:', err);
-          alert(`カードを追加できませんでした: ${err.message}`);
-        }
-      };
-
-      return (
-        <div className="flex flex-1 overflow-hidden">
-          <aside className="w-56 md:w-64 flex-none bg-slate-950/50 border-r border-slate-800 flex flex-col relative select-none">
-            <div className="p-3 border-b border-slate-800 flex justify-between items-center bg-slate-950 shrink-0">
-              <span className="text-sm font-semibold text-slate-300 hidden md:inline">Folders & Memos</span>
-              <span className="text-sm font-semibold text-slate-300 md:hidden">Memos</span>
-              <div className="flex space-x-1">
-                  <button onClick={() => openCreateModal('folder')} className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors" title="New Folder"><FolderPlus size={16} /></button>
-                  <button onClick={() => openCreateModal({type: 'memo', folderId: null})} className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors" title="New Root Memo"><FilePlus size={16} /></button>
-              </div>
-            </div>
-            <div className={`flex-1 overflow-y-auto p-2 space-y-2 pb-20 ${dragOverTarget === 'root' ? 'bg-slate-800/20' : ''}`} onDragOver={(e) => handleDragOver(e, 'root')} onDrop={(e) => handleDrop(e, 'root', null, null)}>
-              {currentFolders.map(folder => (
-                <div key={folder.id} className="mb-2" onDragOver={(e) => handleDragOver(e, folder.id)} onDrop={(e) => handleDrop(e, 'folder', folder.id, folder.id)}>
-                  <div draggable onDragStart={(e) => handleDragStart(e, 'folder', folder)} onDragEnd={handleDragEnd} className={`flex items-center justify-between text-xs font-bold text-slate-400 uppercase tracking-wider px-2 py-1.5 rounded cursor-grab active:cursor-grabbing hover:bg-slate-800/50 group/folder ${dragOverTarget === folder.id ? 'bg-cyan-900/30 border border-cyan-700 text-cyan-300' : 'border border-transparent'}`}>
-                     <div className="flex items-center flex-1 overflow-hidden">
-                        <Folder size={14} className="mr-2 shrink-0" /> 
-                        {editingId === folder.id ? <input autoFocus value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={()=>handleRename('folders', folder.id)} onKeyDown={e=>e.key==='Enter'&&handleRename('folders', folder.id)} className="bg-slate-900 border border-cyan-500 rounded px-1 py-0.5 w-full text-white font-normal" /> : <span className="truncate flex-1" onDoubleClick={(e) => { e.stopPropagation(); setEditingId(folder.id); setEditValue(folder.title); }}>{folder.title}</span>}
-                     </div>
-                     <div className="flex space-x-1 opacity-70 group-hover/folder:opacity-100 transition-opacity ml-2 shrink-0">
-                        <button onClick={(e) => { e.stopPropagation(); setEditingId(folder.id); setEditValue(folder.title); }} className="hover:text-cyan-400 p-0.5"><Pencil size={12}/></button>
-                        <button onClick={(e) => { e.stopPropagation(); openCreateModal({type:'memo', folderId: folder.id}); }} className="hover:text-cyan-400 p-0.5" title="メモを追加"><Plus size={12}/></button>
-                        <button onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder); }} className="hover:text-red-400 p-0.5" title="フォルダを削除"><Trash2 size={12}/></button>
-                     </div>
-                  </div>
-                  <div className="pl-3 mt-1 space-y-0.5 min-h-[4px]">
-                      {currentMemos.filter(m => m.folderId === folder.id).map(memo => (
-                         <MemoSidebarItem key={memo.id} memo={memo} selected={selectedMemoId === memo.id} onSelect={() => setSelectedMemoId(memo.id)} editingId={editingId} setEditingId={setEditingId} editValue={editValue} setEditValue={setEditValue} handleRename={handleRename} handleDragStart={handleDragStart} handleDragEnd={handleDragEnd} handleDragOver={handleDragOver} handleDrop={handleDrop} dragOverTarget={dragOverTarget} setDragOverTarget={setDragOverTarget} onDelete={handleDeleteMemo} />
-                      ))}
-                  </div>
-                </div>
-              ))}
-              {currentMemos.filter(m => !m.folderId).map(memo => (
-                 <MemoSidebarItem key={memo.id} memo={memo} selected={selectedMemoId === memo.id} onSelect={() => setSelectedMemoId(memo.id)} editingId={editingId} setEditingId={setEditingId} editValue={editValue} setEditValue={setEditValue} handleRename={handleRename} handleDragStart={handleDragStart} handleDragEnd={handleDragEnd} handleDragOver={handleDragOver} handleDrop={handleDrop} dragOverTarget={dragOverTarget} setDragOverTarget={setDragOverTarget} onDelete={handleDeleteMemo} />
-              ))}
-              {currentFolders.length === 0 && currentMemos.length === 0 && <div className="text-center p-4 text-xs text-slate-500 italic mt-10">No items yet.</div>}
-            </div>
-          </aside>
-          <main className="flex-1 flex flex-col bg-slate-900 overflow-hidden relative">
-            {selectedMemoId ? (
-              <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
-                {currentCards.map((card, index) => <CardEditor key={card.id} card={card} moves={moves} db={db} appId={appId} user={user} onMove={direction => moveCard(card, direction)} isFirst={index === 0} isLast={index === currentCards.length - 1} applyLocalWrite={applyLocalWrite} stageCard={stageCard} />)}
-                <button onClick={handleAddCard} className="w-full py-4 border-2 border-dashed border-slate-700 rounded-xl text-slate-500 hover:text-cyan-400 hover:border-cyan-500 hover:bg-slate-800/30 transition-all flex items-center justify-center font-medium"><Plus size={20} className="mr-2" /> Add New Card</button>
-              </div>
-            ) : <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">Select or create a memo</div>}
-          </main>
-          <Modal isOpen={!!deleteTarget} onClose={() => setDeleteTarget(null)} title={deleteTarget?.type === 'folder' ? 'フォルダーを削除' : 'メモを削除'}>
-            <div className="space-y-4">
-              <p className="text-sm text-slate-200">
-                「{deleteTarget?.item?.title}」を削除しますか？
-              </p>
-              <p className="text-xs text-red-300 leading-relaxed">
-                {deleteTarget?.type === 'folder'
-                  ? `配下のメモ${currentMemos.filter(m => m.folderId === deleteTarget?.item?.id).length}件と、そのカードも削除します。`
-                  : 'このメモに含まれるカードも削除します。'}
-                この操作は取り消せません。
-              </p>
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
-                <button type="button" onClick={() => setDeleteTarget(null)} className="px-4 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-800">キャンセル</button>
-                <button type="button" onClick={confirmDeletion} className="px-4 py-2 rounded-md text-sm font-bold bg-red-600 hover:bg-red-500 text-white">削除する</button>
-              </div>
-            </div>
-          </Modal>
-          <Modal isOpen={!!creatingType} onClose={() => setCreatingType(null)} title={creatingType === 'folder' ? "Create Folder" : "Create Memo"}>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Title</label>
-                <input type="text" value={newItemTitle} onChange={e => setNewItemTitle(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleCreate()} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="Enter title..." autoFocus />
-              </div>
-              <div className="pt-4 flex justify-end space-x-2">
-                <button onClick={() => setCreatingType(null)} className="px-4 py-2 rounded-md text-sm text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">Cancel</button>
-                <button onClick={handleCreate} disabled={!newItemTitle.trim() || isCreating} className="px-4 py-2 rounded-md text-sm font-bold bg-cyan-600 hover:bg-cyan-500 text-white disabled:opacity-50 transition-colors">{isCreating ? 'Saving...' : 'Create'}</button>
-              </div>
-            </div>
-          </Modal>
-        </div>
-      );
-    }
-
-    function MemoSidebarItem({ memo, selected, onSelect, editingId, setEditingId, editValue, setEditValue, handleRename, handleDragStart, handleDragEnd, handleDragOver, handleDrop, dragOverTarget, setDragOverTarget, onDelete }) {
-       return (
-           <div draggable onDragStart={(e) => handleDragStart(e, 'memo', memo)} onDragEnd={handleDragEnd} onDragOver={(e) => handleDragOver(e, memo.id)} onDrop={(e) => handleDrop(e, 'memo', memo.id, memo.folderId)} className={`w-full flex items-center justify-between text-left px-2 py-1.5 rounded-md text-sm transition-all cursor-grab active:cursor-grabbing group/memo border-l-2 ${selected ? 'bg-slate-800 text-white border-cyan-500 shadow-sm' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 border-transparent'} ${dragOverTarget === memo.id ? 'border-t-2 border-t-cyan-400 bg-slate-800/80' : ''}`}>
-               <div className="flex items-center flex-1 overflow-hidden" onClick={onSelect}>
-                   <FileText size={14} className="mr-2 opacity-50 shrink-0" />
-                   {editingId === memo.id ? <input autoFocus value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={()=>handleRename('memos', memo.id)} onKeyDown={e=>e.key==='Enter'&&handleRename('memos', memo.id)} className="bg-slate-900 border border-cyan-500 rounded px-1 py-0.5 w-full text-white font-normal" /> : <span className="truncate flex-1" onDoubleClick={(e) => { e.stopPropagation(); setEditingId(memo.id); setEditValue(memo.title); }}>{memo.title}</span>}
-               </div>
-               <div className="flex items-center ml-2 shrink-0">
-                 <button onClick={(e) => { e.stopPropagation(); setEditingId(memo.id); setEditValue(memo.title); }} className="opacity-0 group-hover/memo:opacity-100 hover:text-cyan-400 p-0.5" title="名前を変更"><Pencil size={12}/></button>
-                 <button onClick={(e) => { e.stopPropagation(); onDelete(memo); }} className="opacity-70 group-hover/memo:opacity-100 hover:text-red-400 p-0.5" title="メモを削除"><Trash2 size={12}/></button>
-               </div>
-           </div>
-       )
-    }
-
-    function AutoExpandingTextarea({ value, onChange, placeholder, className }) {
-      const ref = useRef(null);
-      useEffect(() => { if (ref.current) { ref.current.style.height = '0px'; ref.current.style.height = Math.max(60, ref.current.scrollHeight) + 'px'; } }, [value]);
-      return <textarea ref={ref} value={value} onChange={onChange} placeholder={placeholder} className={`${className} overflow-hidden resize-none`} rows={1} />;
-    }
-
-    function CardEditor({ card, moves, db, appId, user, onMove, isFirst, isLast, applyLocalWrite, stageCard }) {
-      const [editingBlock, setEditingBlock] = useState(null);
-      const initialBlocks = Array.isArray(card.blocks) ? card.blocks : [];
-      const [blocks, setBlocks] = useState(initialBlocks);
-      const blocksRef = useRef(initialBlocks);
-      const saveTimerRef = useRef(null);
-      const latestJsonRef = useRef(JSON.stringify(initialBlocks));
-      const savedJsonRef = useRef(JSON.stringify(initialBlocks));
-      const deletedRef = useRef(false);
-      const ioRef = useRef({ db, appId, user, cardId: card.id, applyLocalWrite, stageCard });
-      ioRef.current = { db, appId, user, cardId: card.id, applyLocalWrite, stageCard };
-
-      // Sending a write hands its responsibility to MainLayout. It survives
-      // CardEditor being unmounted by a tab or character switch.
-      const flushSave = () => {
-        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-        if (deletedRef.current || savedJsonRef.current === latestJsonRef.current) return;
-        const json = latestJsonRef.current;
-        savedJsonRef.current = json;
-        const io = ioRef.current;
-        io.applyLocalWrite('cards', doc(io.db, 'artifacts', io.appId, 'users', io.user.uid, 'cards', io.cardId), { blocks: JSON.parse(json) }, 'update');
-      };
-      const commitBlocks = (updater, immediate = false) => {
-        const previous = blocksRef.current;
-        const next = typeof updater === 'function' ? updater(previous) : updater;
-        const json = JSON.stringify(next);
-        if (json === latestJsonRef.current) return;
-        blocksRef.current = next;
-        latestJsonRef.current = json;
-        setBlocks(next);
-        ioRef.current.stageCard(card.id, next);
-        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-        if (immediate) flushSave();
-        else saveTimerRef.current = setTimeout(flushSave, 250);
-      };
-      const updateBlock = (blockId, patch, immediate = false) =>
-        commitBlocks(previous => previous.map(block => block.id === blockId ? { ...block, ...patch } : block), immediate);
-      const incomingJson = JSON.stringify(Array.isArray(card.blocks) ? card.blocks : []);
-      useEffect(() => {
-        if (incomingJson === latestJsonRef.current) return;
-        if (latestJsonRef.current === savedJsonRef.current) {
-          const incoming = Array.isArray(card.blocks) ? card.blocks : [];
-          blocksRef.current = incoming;
-          latestJsonRef.current = incomingJson;
-          savedJsonRef.current = incomingJson;
-          setBlocks(incoming);
-        }
-      }, [card.id, incomingJson]);
-      useEffect(() => () => flushSave(), [card.id]);
-
-      const handleDeleteCard = async () => {
-        if (!window.confirm('このカードを削除しますか？')) return;
-        try {
-          if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-          deletedRef.current = true;
-          applyLocalWrite('cards', doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id), null, 'delete');
-        }
-        catch (err) { console.error(err); alert(`カードを削除できませんでした: ${err.message}`); }
-      };
-
-      const addBlock = (type) => {
-        const newBlock = type === 'text'
-          ? { id: createId(), type: 'text', content: '' }
-          : { id: createId(), type: 'combo', moveIds: [], state: 'ノーマル', dmg: '', situation: '' };
-        commitBlocks(previous => [...previous, newBlock]);
-        if (type === 'combo') setEditingBlock(newBlock);
-      };
-
-      const removeBlock = (blockId) => commitBlocks(previous => previous.filter(block => block.id !== blockId));
-      const moveBlock = (index, direction) => commitBlocks(previous => {
-        const next = [...previous];
-        const target = index + (direction === 'up' ? -1 : 1);
-        if (target < 0 || target >= next.length) return previous;
-        [next[index], next[target]] = [next[target], next[index]];
-        return next;
-      });
-      const handleSaveCombo = (updatedComboBlock) => {
-        // Commit to React state and optimistic overlay synchronously.
-        // The cloud write is queued, not awaited by the popup.
-        updateBlock(updatedComboBlock.id, updatedComboBlock, true);
-        setEditingBlock(null);
-      };
-      const safeBlocks = Array.isArray(blocks) ? blocks : [];
-
-      return (
-        <div className="bg-slate-900 border border-slate-700 rounded-xl shadow-lg overflow-hidden flex flex-col group relative">
-          <div className="px-2 py-1 bg-slate-800/50 flex justify-between items-center">
-            <span className="text-[10px] text-slate-500">CARD</span>
-            <div className="flex items-center gap-1">
-              <button onClick={() => onMove(-1)} disabled={isFirst} className="p-1 text-slate-500 hover:text-cyan-400 rounded disabled:opacity-20" title="カードを上へ"><ChevronUp size={14}/></button>
-              <button onClick={() => onMove(1)} disabled={isLast} className="p-1 text-slate-500 hover:text-cyan-400 rounded disabled:opacity-20" title="カードを下へ"><ChevronDown size={14}/></button>
-              <button onClick={handleDeleteCard} className="p-1 text-red-400 hover:text-red-300 rounded" title="カードを削除"><Trash2 size={14}/></button>
-            </div>
-          </div>
-          <div className="p-3 md:p-4 space-y-4">
-            {safeBlocks.map((block, index) => {
-              const moveIds = Array.isArray(block.moveIds) ? block.moveIds : [];
-              return (
-                <div key={block.id} className="relative group/block flex gap-2">
-                  <div className="flex-1 min-w-0 relative">
-                    {block.type === 'text' ? (
-                      <AutoExpandingTextarea value={block.content || ''} onChange={e => updateBlock(block.id, { content: e.target.value })} placeholder="Write your notes here..." className="w-full bg-transparent text-slate-200 border-none focus:ring-0 p-2 hover:bg-slate-800/30 focus:bg-slate-800/50 rounded transition-colors text-sm" />
-                    ) : (
-                      <div onClick={() => setEditingBlock(block)} className="p-3 bg-slate-950 rounded-lg border border-slate-800 cursor-pointer hover:border-cyan-700 hover:shadow-[0_0_10px_rgba(6,182,212,0.15)] transition-all">
-                        <div className="flex flex-wrap items-center gap-1.5 mb-2">
-                          {block.state && <span className={`shrink-0 rounded px-2 py-1 text-xs font-bold ${block.state === 'パニカン' ? 'bg-red-600 text-white' : block.state === 'カウンター' ? 'bg-yellow-400 text-yellow-950' : 'bg-slate-700 text-slate-100'}`}>{block.state === '通常' ? 'ノーマル' : block.state}</span>}
-                          {moveIds.length > 0 ? moveIds.map((moveId, idx) => {
-                            const move = moves.find(item => item.id === moveId) || moves.find(item => item.overrideId === moveId);
-                            if (!move) return <span key={`${moveId}-${idx}`} className="text-red-500 text-xs">Unknown Move</span>;
-                            return <React.Fragment key={`${moveId}-${idx}`}><MoveTile minimal move={move} />{idx < moveIds.length - 1 && <ChevronRight size={14} className="text-slate-500" />}</React.Fragment>;
-                          }) : <span className="text-slate-500 text-sm italic">Empty Combo</span>}
-                        </div>
-                        {block.dmg && <div className="text-xs text-white font-semibold mt-1">dmg: {block.dmg}</div>}
-                        {block.situation && <div className="text-xs text-white mt-1 truncate"><span className="opacity-80">コンボ後の状況:</span> {block.situation}</div>}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex flex-col space-y-1 opacity-0 group-hover/block:opacity-100 transition-opacity justify-center shrink-0">
-                    <button onClick={() => moveBlock(index, 'up')} disabled={index === 0} className="p-1 text-slate-500 hover:text-cyan-400 hover:bg-slate-800 rounded disabled:opacity-20"><ChevronUp size={16} /></button>
-                    <button onClick={() => moveBlock(index, 'down')} disabled={index === safeBlocks.length - 1} className="p-1 text-slate-500 hover:text-cyan-400 hover:bg-slate-800 rounded disabled:opacity-20"><ChevronDown size={16} /></button>
-                    <button onClick={() => removeBlock(block.id)} className="p-1 text-slate-500 hover:text-red-400 hover:bg-slate-800 rounded"><X size={16} /></button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <div className="bg-slate-950/30 p-2 border-t border-slate-800 flex justify-center space-x-2">
-            <button onClick={() => addBlock('text')} className="px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-md transition-colors flex items-center"><Edit2 size={12} className="mr-1.5" /> Add Text</button>
-            <button onClick={() => addBlock('combo')} className="px-3 py-1.5 text-xs font-medium text-cyan-400 hover:text-cyan-200 bg-cyan-950 hover:bg-cyan-900 rounded-md border border-cyan-800/50 transition-colors flex items-center"><Sword size={12} className="mr-1.5" /> Add Combo</button>
-          </div>
-          {editingBlock && editingBlock.type === 'combo' && <ComboBuilderModal isOpen={true} onClose={() => setEditingBlock(null)} initialData={editingBlock} onSave={handleSaveCombo} moves={moves} />}
-        </div>
-      );
-    }
-
-    function ComboBuilderModal({ isOpen, onClose, initialData, onSave, moves }) {
-      const [activeCategory, setActiveCategory] = useState(CATEGORIES[0]);
-      const normalizeCombo = (data) => ({
-        ...data,
-        moveIds: Array.isArray(data.moveIds) ? data.moveIds : [],
-        state: data.state === '通常' ? 'ノーマル' : (data.state || 'ノーマル'),
-        dmg: data.dmg ?? '',
-        situation: data.situation ?? ''
-      });
-      const [comboData, setComboData] = useState(() => normalizeCombo(initialData));
-      useEffect(() => { setComboData(normalizeCombo(initialData)); }, [initialData.id]);
-      if (!isOpen) return null;
-
-      const currentCategoryMoves = moves.filter(m => m.category === activeCategory);
-      const handleAddMove = (moveId) => setComboData(prev => ({ ...prev, moveIds: [...(Array.isArray(prev.moveIds) ? prev.moveIds : []), moveId] }));
-      const handleRemoveMove = (index) => setComboData(prev => { const newIds = [...(Array.isArray(prev.moveIds) ? prev.moveIds : [])]; newIds.splice(index, 1); return { ...prev, moveIds: newIds }; });
-      const handleChange = (e) => setComboData(prev => ({ ...prev, [e.target.name]: e.target.value }));
-      const [isSaving, setIsSaving] = useState(false);
-      const handleSubmitCombo = async () => {
-        if (isSaving) return;
-        setIsSaving(true);
-        try {
-          await onSave({ ...comboData, state: comboData.state === '通常' ? 'ノーマル' : comboData.state });
-        } catch (error) {
-          console.error('Combo save failed:', error);
-          alert(`コンボを保存できませんでした: ${error.message}`);
-        } finally { setIsSaving(false); }
-      };
-
-      return (
-        <Modal isOpen={isOpen} onClose={onClose} title="Combo Builder" maxWidth="max-w-3xl">
-          <div className="flex flex-col h-[65vh] min-h-[400px]">
-            <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 mb-4 shrink-0 shadow-inner">
-              <div className="text-xs text-slate-500 mb-2 uppercase tracking-wide font-semibold">Sequence Preview</div>
-              <div className="flex flex-wrap items-center gap-2 min-h-[40px]">
-                {comboData.moveIds.length === 0 && <span className="text-slate-600 text-sm italic">Select moves below to build combo...</span>}
-                {comboData.moveIds.map((mid, idx) => {
-                  const move = moves.find(m => m.id === mid) || moves.find(m => m.overrideId === mid);
-                  if (!move) return <div key={idx} onClick={() => handleRemoveMove(idx)} className="cursor-pointer group flex items-center"><span className="bg-red-900/50 text-red-200 px-2 py-1 rounded text-xs">Missing</span>{idx < comboData.moveIds.length - 1 && <ChevronRight size={14} className="text-slate-600 mx-1 group-hover:hidden" />}</div>;
-                  return (
-                    <React.Fragment key={idx}>
-                      <div className="relative group cursor-pointer" onClick={() => handleRemoveMove(idx)} title="Click to remove">
-                        <MoveTile minimal move={move} />
-                        <div className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-md"><X size={10} /></div>
-                      </div>
-                      {idx < comboData.moveIds.length - 1 && <ChevronRight size={16} className="text-slate-500" />}
-                    </React.Fragment>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="flex-1 flex flex-col min-h-0 border border-slate-800 rounded-lg overflow-hidden mb-4">
-              <div className="flex overflow-x-auto bg-slate-950 border-b border-slate-800 shrink-0">
-                {CATEGORIES.map(cat => (
-                  <button key={cat} onClick={() => setActiveCategory(cat)} className={`px-3 py-2 text-xs font-medium whitespace-nowrap transition-colors ${activeCategory === cat ? 'bg-cyan-900/30 text-cyan-400 border-b-2 border-cyan-500' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}>{cat}</button>
-                ))}
-              </div>
-              <div className="flex-1 overflow-y-auto p-3 bg-slate-900/50">
-                <div className="flex flex-wrap gap-2">
-                  {currentCategoryMoves.map(move => <button key={move.id} onClick={() => handleAddMove(move.overrideId || move.id)} className={`px-3 py-1.5 rounded-md text-sm font-bold border shadow-sm transition-all hover:scale-105 active:scale-95 ${STRENGTH_COLORS[move.strength] || STRENGTH_COLORS['その他']}`}>{move.name}</button>)}
-                  {currentCategoryMoves.length === 0 && <div className="w-full text-center text-slate-500 text-sm py-4">No moves found in this category.</div>}
-                </div>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 shrink-0 pt-2 border-t border-slate-800">
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">ヒット</label>
-                <select name="state" value={comboData.state === '通常' ? 'ノーマル' : (comboData.state || 'ノーマル')} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-1.5 text-white text-sm focus:outline-none focus:border-cyan-500 appearance-none">{COMBO_STATES.map(s => <option key={s} value={s}>{s}</option>)}</select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Damage (dmg)</label>
-                <input type="text" name="dmg" value={comboData.dmg || ''} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-1.5 text-white text-sm focus:outline-none focus:border-cyan-500" placeholder="e.g. 3500" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">コンボ後の状況</label>
-                <input type="text" name="situation" value={comboData.situation || ''} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-1.5 text-white text-sm focus:outline-none focus:border-cyan-500" placeholder="e.g. 画面端" />
-              </div>
-            </div>
-            <div className="pt-3 mt-2 flex justify-end space-x-2 shrink-0">
-              <button onClick={onClose} className="px-4 py-2 rounded-md text-sm text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">Cancel</button>
-              <button onClick={handleSubmitCombo} disabled={isSaving} className="flex items-center px-4 py-2 rounded-md text-sm font-bold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors shadow-lg shadow-cyan-900/20"><Save size={16} className="mr-2" /> {isSaving ? 'Saving...' : 'Save Combo'}</button>
-            </div>
-          </div>
-        </Modal>
-      );
-    }
-
-    class DisplayErrorBoundary extends React.Component {
-      constructor(props) { super(props); this.state = { error: null }; }
-      static getDerivedStateFromError(error) { return { error }; }
-      componentDidCatch(error, info) { console.error('FG Tool render error:', error, info); }
-      render() {
-        if (!this.state.error) return this.props.children;
-        return <div className="min-h-screen bg-slate-900 text-slate-200 flex items-center justify-center p-6"><div className="max-w-xl rounded-xl border border-red-700 bg-slate-950 p-6"><h1 className="text-xl font-bold text-red-400 mb-3">FG Tool 表示エラー</h1><p className="text-sm mb-3">表示処理でエラーが発生しました。以下の内容をお知らせください。</p><pre className="whitespace-pre-wrap break-all text-xs text-red-200">{String(this.state.error?.message || this.state.error)}</pre></div></div>;
-      }
-    }
-    const root = createRoot(document.getElementById('root'));
-    root.render(<DisplayErrorBoundary><App /></DisplayErrorBoundary>);
-  </script>
-</body>
-</html>
+[
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_5lp",
+    "name": "弱P",
+    "command": "5LP",
+    "strength": "弱",
+    "startup": "5",
+    "hit": "+4",
+    "block": "-1"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_5lk",
+    "name": "弱K",
+    "command": "5LK",
+    "strength": "弱",
+    "startup": "4",
+    "hit": "+3",
+    "block": "-3"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_5mp",
+    "name": "中P",
+    "command": "5MP",
+    "strength": "中",
+    "startup": "6",
+    "hit": "+3",
+    "block": "-3"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_5mk",
+    "name": "中K",
+    "command": "5MK",
+    "strength": "中",
+    "startup": "8",
+    "hit": "+6",
+    "block": "-2"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_5hp",
+    "name": "強P",
+    "command": "5HP",
+    "strength": "強",
+    "startup": "12",
+    "hit": "+1",
+    "block": "-4"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_5hk",
+    "name": "強K",
+    "command": "5HK",
+    "strength": "強",
+    "startup": "9",
+    "hit": "+4",
+    "block": "-3"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_2lp",
+    "name": "2弱P",
+    "command": "2LP",
+    "strength": "弱",
+    "startup": "4",
+    "hit": "+4",
+    "block": "-1"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_2lk",
+    "name": "2弱K",
+    "command": "2LK",
+    "strength": "弱",
+    "startup": "5",
+    "hit": "+3",
+    "block": "-2"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_2mp",
+    "name": "2中P",
+    "command": "2MP",
+    "strength": "中",
+    "startup": "7",
+    "hit": "+1",
+    "block": "-3"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_2mk",
+    "name": "2中K",
+    "command": "2MK",
+    "strength": "中",
+    "startup": "7",
+    "hit": "+5",
+    "block": "+1"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_2hp",
+    "name": "2強P",
+    "command": "2HP",
+    "strength": "強",
+    "startup": "10",
+    "hit": "D",
+    "block": "-8"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_2hk",
+    "name": "2強K",
+    "command": "2HK",
+    "strength": "強",
+    "startup": "10",
+    "hit": "0",
+    "block": "-3"
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_jlp",
+    "name": "j弱P",
+    "command": "jLP",
+    "strength": "弱",
+    "startup": "5",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_jlk",
+    "name": "j弱K",
+    "command": "jLK",
+    "strength": "弱",
+    "startup": "5",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_jmp",
+    "name": "j中P",
+    "command": "jMP",
+    "strength": "中",
+    "startup": "7",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_jmk",
+    "name": "j中K",
+    "command": "jMK",
+    "strength": "中",
+    "startup": "7",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_jhp",
+    "name": "j強P",
+    "command": "jHP",
+    "strength": "強",
+    "startup": "11",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常技",
+    "moveId": "aki_jhk",
+    "name": "j強K",
+    "command": "jHK",
+    "strength": "強",
+    "startup": "8",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常投げ",
+    "moveId": "aki_5lplk",
+    "name": "前投げ",
+    "command": "5LPLK",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "通常投げ",
+    "moveId": "aki_4lplk",
+    "name": "後ろ投げ",
+    "command": "4LPLK",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_66",
+    "name": "前ステップ",
+    "command": "66",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_44",
+    "name": "バックステップ",
+    "command": "44",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_hphk",
+    "name": "インパクト",
+    "command": "HPHK",
+    "strength": "強",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_p",
+    "name": "パリィ",
+    "command": "MPMK",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_pp",
+    "name": "ジャストパリィ",
+    "command": "MPMK",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_pdr",
+    "name": "DR",
+    "command": "66MPMK",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_cdr",
+    "name": "CR",
+    "command": "66MPMK",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_6hphk",
+    "name": "Dリバーサル",
+    "command": "6HPHK",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_6",
+    "name": "前歩き",
+    "command": "6",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_4",
+    "name": "後ろ歩き",
+    "command": "4",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_9",
+    "name": "前ジャンプ",
+    "command": "9",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_8",
+    "name": "垂直ジャンプ",
+    "command": "8",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_7",
+    "name": "バックジャンプ",
+    "command": "7",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_5",
+    "name": "立ち",
+    "command": "5",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_2",
+    "name": "しゃがみ",
+    "command": "2",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "共通行動",
+    "moveId": "aki_delay",
+    "name": "ディレイ",
+    "command": "delay",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "SA",
+    "moveId": "aki_SA1",
+    "name": "SA1",
+    "command": "236236K",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "SA",
+    "moveId": "aki_SA2",
+    "name": "SA2",
+    "command": "214214P",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "SA",
+    "moveId": "aki_SA3",
+    "name": "SA3",
+    "command": "236236P",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "SA",
+    "moveId": "aki_CA",
+    "name": "CA",
+    "command": "236236P",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "特殊技",
+    "moveId": "aki_3mp",
+    "name": "3中P",
+    "command": "3MP",
+    "strength": "中",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "特殊技",
+    "moveId": "aki_6hp",
+    "name": "6大P",
+    "command": "6HP",
+    "strength": "強",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "特殊技",
+    "moveId": "aki_6hk",
+    "name": "6大K",
+    "command": "6HK",
+    "strength": "強",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "特殊技",
+    "moveId": "aki_j2hp",
+    "name": "J2大P",
+    "command": "j2HP",
+    "strength": "強",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "特殊技",
+    "moveId": "aki_5lp5lp",
+    "name": "弱P・弱P",
+    "command": "5LP5LP",
+    "strength": "弱",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "特殊技",
+    "moveId": "aki_5hp5hp",
+    "name": "大P・大P",
+    "command": "5HP5HP",
+    "strength": "強",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_214lp",
+    "name": "紫煙砲",
+    "command": "214LP",
+    "strength": "弱",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_6p",
+    "name": "紫煙追",
+    "command": "6P",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_214pp",
+    "name": "OD 紫煙砲",
+    "command": "214PP",
+    "strength": "OD",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_6pp",
+    "name": "OD 紫煙追",
+    "command": "6P",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_214mp",
+    "name": "紫泡泉",
+    "command": "214MP",
+    "strength": "中",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_214hp",
+    "name": "紫泡撒",
+    "command": "214HP",
+    "strength": "強",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_236lp",
+    "name": "弱 蛇頭鞭",
+    "command": "236LP",
+    "strength": "弱",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_236mp",
+    "name": "中 蛇頭鞭",
+    "command": "236MP",
+    "strength": "中",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_236hp",
+    "name": "強 蛇頭鞭",
+    "command": "236HP",
+    "strength": "強",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_236pp",
+    "name": "OD 蛇頭鞭",
+    "command": "236PP",
+    "strength": "OD",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_214lk",
+    "name": "弱 凶襲突",
+    "command": "214LK",
+    "strength": "弱",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_214mk",
+    "name": "中 凶襲突",
+    "command": "214MK",
+    "strength": "中",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_214hk",
+    "name": "強 凶襲突",
+    "command": "214HK",
+    "strength": "強",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_214kk",
+    "name": "OD 凶襲突",
+    "command": "214KK",
+    "strength": "OD",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_236lk",
+    "name": "弱 蛇軽功",
+    "command": "236LK",
+    "strength": "弱",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_236mk",
+    "name": "中 蛇軽功",
+    "command": "236MK",
+    "strength": "中",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_236hk",
+    "name": "強 蛇軽功",
+    "command": "236HK",
+    "strength": "強",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_236kk",
+    "name": "OD 蛇軽功",
+    "command": "236KK",
+    "strength": "OD",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_2pp",
+    "name": "悪鬼蛇行",
+    "command": "2PP",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_2ppp",
+    "name": "猛毒牙",
+    "command": "P",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_2ppk",
+    "name": "蛇連咬",
+    "command": "K",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  },
+  {
+    "charId": "A.K.I.",
+    "category": "必殺技",
+    "moveId": "aki_2pplplk",
+    "name": "雁字搦",
+    "command": "LPLK",
+    "strength": "",
+    "startup": "",
+    "hit": "",
+    "block": ""
+  }
+]
