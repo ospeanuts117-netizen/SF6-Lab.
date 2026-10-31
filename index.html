@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool (Standalone)</title>
+  <title>SF6 Lab.</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -285,7 +285,7 @@
       return (
         <div className="min-h-screen flex items-center justify-center bg-slate-900 p-4 font-sans text-slate-200">
           <div className="bg-slate-950 border border-slate-800 p-6 md:p-8 rounded-xl shadow-2xl max-w-md w-full">
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent mb-6 text-center">FG Tool</h1>
+            <h1 className="mb-6 text-center leading-tight"><span className="block text-sm font-medium text-slate-400">Street Fighter 6 memo tool</span><span className="block mt-1 text-3xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">SF6 Lab.</span></h1>
             <p className="text-sm text-slate-400 mb-6 text-center leading-relaxed">複数端末でデータを同期するには、同じメールアドレスとパスワードを使用してください。初回はアカウントが作成されます。</p>
             <form onSubmit={handleAccount} className="space-y-4">
               <input type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="メールアドレス" className="w-full bg-slate-900 border border-slate-700 rounded-md px-4 py-3 text-white focus:outline-none focus:border-cyan-500" disabled={loading} required />
@@ -473,7 +473,7 @@
         <div className="h-screen flex flex-col bg-slate-900 text-slate-200 font-sans overflow-hidden">
           <header className="flex-none h-14 bg-slate-950 border-b border-slate-800 flex items-center justify-between px-4 shrink-0">
             <div className="flex items-center h-full">
-              <h1 className="text-xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent mr-6 md:mr-8">FG Tool</h1>
+              <h1 className="flex flex-col justify-center leading-tight mr-3 md:mr-6 shrink-0"><span className="text-[10px] md:text-xs font-medium text-slate-400 whitespace-nowrap">Street Fighter 6 memo tool</span><span className="text-lg md:text-xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">SF6 Lab.</span></h1>
               <nav className="flex space-x-1 md:space-x-2 h-full items-end">
                 <TabButton active={activeTab === 'data'} onClick={() => setActiveTab('data')} icon={<Book size={16} />} label="Data" />
                 <TabButton active={activeTab === 'offense'} onClick={() => { if (activeTab !== 'offense') { setNotesTab('offense'); setActiveTab('offense'); } }} icon={<Sword size={16} />} label="Offense" />
@@ -702,7 +702,7 @@
 
     function MoveTile({ move, onClick, minimal = false }) {
       const colorClass = move.category === 'SA' || /^(?:SA[123]?|CA)$/i.test(String(move.name || '').trim())
-        ? 'bg-purple-500 text-white border-purple-700'
+        ? 'bg-purple-300 text-purple-950 border-purple-400'
         : (STRENGTH_COLORS[move.strength] || STRENGTH_COLORS['その他']);
       if (minimal) {
         return (
