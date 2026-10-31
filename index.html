@@ -74,12 +74,12 @@
     const createId = () => (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const CHARACTERS = [
-      "A.K.I.", "アルジュン", "アレックス", "イングリッド", "エド", "エドモンド本田", "エレナ", "ガイル", "キャミィ", "キンバリー", "C.ヴァイパー", "ケン", "豪鬼", "サガット", "ザンギエフ", "ジェイミー", "JP", "ジュリ", "ダルシム", "春麗", "ディージェイ", "テリー", "ベガ", "ブランカ", "舞", "マノン", "マリーザ", "ヤスミン", "ラシード", "リュウ", "リリー", "ルーク"
+      "A.K.I.", "アルジュン", "アレックス", "イングリッド", "エド", "エドモンド本田", "エレナ", "ガイル", "キャミィ", "キンバリー", "C.ヴァイパー", "ケン", "豪鬼", "サガット", "ザンギエフ", "ジェイミー", "JP", "ジュリ", "ダルシム", "春麗", "ディージェイ", "テリー", "ブランカ", "ベガ", "舞", "マノン", "マリーザ", "ヤスミン", "ラシード", "リュウ", "リリー", "ルーク"
     ];
 
     const CATEGORIES = ['通常技', '特殊技', '必殺技', 'SA', '通常投げ', '共通行動'];
     const STRENGTHS = ['弱', '中', '強', 'OD', 'その他'];
-    const COMBO_STATES = ['通常', 'カウンター', 'パニカン'];
+    const COMBO_STATES = ['ノーマル', 'カウンター', 'パニカン'];
 
     const DEFAULT_MOVES_DATA = {
       '通常技': ['弱P', '中P', '強P', '弱K', '中K', '強K', '2弱P', '2中P', '2強P', '2弱K', '2中K', '2強K', 'j弱P', 'j中P', 'j強P', 'j弱K', 'j中K', 'j強K'],
@@ -220,6 +220,7 @@
 
     function MainLayout({ db, user, appId, auth }) {
       const [activeTab, setActiveTab] = useState('data');
+      const [notesTab, setNotesTab] = useState('offense');
       const [selectedChar, setSelectedChar] = useState(CHARACTERS[0]);
       
       const [allMoves, setAllMoves] = useState([]);
@@ -282,8 +283,8 @@
               <h1 className="text-xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent mr-6 md:mr-8">FG Tool</h1>
               <nav className="flex space-x-1 md:space-x-2 h-full items-end">
                 <TabButton active={activeTab === 'data'} onClick={() => setActiveTab('data')} icon={<Book size={16} />} label="Data" />
-                <TabButton active={activeTab === 'offense'} onClick={() => setActiveTab('offense')} icon={<Sword size={16} />} label="Offense" />
-                <TabButton active={activeTab === 'defense'} onClick={() => setActiveTab('defense')} icon={<Shield size={16} />} label="Defense" />
+                <TabButton active={activeTab === 'offense'} onClick={() => { setNotesTab('offense'); setActiveTab('offense'); }} icon={<Sword size={16} />} label="Offense" />
+                <TabButton active={activeTab === 'defense'} onClick={() => { setNotesTab('defense'); setActiveTab('defense'); }} icon={<Shield size={16} />} label="Defense" />
               </nav>
             </div>
             <div className="flex items-center space-x-2">
@@ -320,11 +321,12 @@
               </div>
             </aside>
             <main className="flex-1 flex flex-col min-w-0 overflow-hidden bg-slate-900">
-              {activeTab === 'data' ? (
-                <DataView charName={selectedChar} moves={currentMoves} db={db} user={user} appId={appId} />
-              ) : (
-                <NotesView tab={activeTab} charName={selectedChar} memos={currentMemos} allFolders={allFolders} allCards={allCards} moves={currentMoves} db={db} user={user} appId={appId} />
-              )}
+              <div className={activeTab === 'data' ? 'hidden h-full' : 'flex flex-1 min-h-0'}>
+                <NotesView tab={notesTab} charName={selectedChar}
+                  memos={allMemos.filter(m => m.charId === selectedChar && m.tab === notesTab)}
+                  allFolders={allFolders} allCards={allCards} moves={currentMoves} db={db} user={user} appId={appId} />
+              </div>
+              {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} db={db} user={user} appId={appId} />}
             </main>
           </div>
         </div>
@@ -478,10 +480,40 @@
             <span className="truncate" title={move.name}>{move.name || 'Unnamed'}</span>
             {move.command && <span className="text-[10px] opacity-70 ml-1 font-mono bg-black/10 px-1 rounded whitespace-nowrap">{move.command}</span>}
           </div>
-          <div className="flex-1 p-2 grid grid-cols-2 gap-x-2 gap-y-1 text-xs items-center align-middle">
-            <div className="flex flex-col"><span className="opacity-60 text-[10px] leading-tight">発生</span><span className="font-semibold">{move.startup || '-'}</span></div>
-            <div className="flex flex-col"><span className="opacity-60 text-[10px] leading-tight">ガード</span><span className="font-semibold">{move.block || '-'}</span></div>
-            <div className="flex flex-col col-span-2"><span className="opacity-60 text-[10px] leading-tight">ヒット</span><span className="font-semibold">{move.hit || '-'}</span></div>
+          <div className="flex-1 p-2 grid grid-cols-3 gap-x-2 text-xs items-center">
+            <div className="flex flex-col min-w-0"><span className="opacity-60 text-[10px] leading-tight">発生</span><span className="font-semibold whitespace-nowrap">{move.startup || '-'}</span></div>
+            <div className="flex flex-col min-w-0"><span className="opacity-60 text-[10px] leading-tight">ガード</span><span className="font-semibold whitespace-nowrap">{move.block || '-'}</span></div>
+            <div className="flex flex-col min-w-0"><span className="opacity-60 text-[10px] leading-tight">ヒット</span><span className="font-semibold whitespace-nowrap">{move.hit || '-'}</span></div>
+          </div>
+        </div>
+      );
+    }
+
+    function splitFrameValue(rawValue) {
+      const raw = String(rawValue ?? '').trim();
+      if (!raw) return { sign: '+', value: '' };
+      const match = raw.match(/^([+-])(.*)$/);
+      return match ? { sign: match[1], value: match[2] } : { sign: '+', value: raw };
+    }
+
+    function FrameInput({ label, name, value, onChange }) {
+      const parsed = splitFrameValue(value);
+      const setSign = (sign) => onChange(name, `${sign}${parsed.value}`);
+      const setNumber = (nextValue) => onChange(name, nextValue === '' ? '' : `${parsed.sign}${nextValue}`);
+      return (
+        <div className="min-w-0">
+          <label className="block text-xs font-medium text-slate-400 mb-1">{label}</label>
+          <div className="flex items-center gap-1">
+            <div className="flex shrink-0 rounded-md overflow-hidden border border-slate-700">
+              {['+', '-'].map(sign => (
+                <button type="button" key={sign} onClick={() => setSign(sign)}
+                  className={`px-3 py-2 text-sm font-bold ${parsed.sign === sign ? 'bg-cyan-700 text-white' : 'bg-slate-950 text-slate-400 hover:text-white'}`}>{sign}</button>
+              ))}
+            </div>
+            <input type="text" inputMode="text" value={parsed.value}
+              onChange={e => setNumber(e.target.value)}
+              className="min-w-0 w-full bg-slate-950 border border-slate-700 rounded-md px-2 py-2 text-white focus:outline-none focus:border-cyan-500"
+              placeholder="数値" />
           </div>
         </div>
       );
@@ -493,46 +525,51 @@
 
       if (!isOpen || !move) return null;
       const handleChange = (e) => setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
+      const handleFrameChange = (name, value) => setFormData(prev => ({ ...prev, [name]: value }));
       const isCustomOrOverride = Boolean(formData.id && !formData.isDefault);
 
       return (
-        <Modal isOpen={isOpen} onClose={onClose} title={move.isDefault || move.isDefaultOverride ? "Edit Default Move" : "Edit Move"}>
+        <Modal isOpen={isOpen} onClose={onClose} title="Edit Move">
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="col-span-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">Name</label>
-                <input type="text" name="name" value={formData.name || ''} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="e.g. 立ち中P" />
+                <input type="text" name="name" value={formData.name || ''} onChange={handleChange}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="技名" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">Command</label>
-                <input type="text" name="command" value={formData.command || ''} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="e.g. 236P" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Strength</label>
-                <select name="strength" value={formData.strength || 'その他'} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500 appearance-none">
-                  {STRENGTHS.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Startup (発生)</label>
-                <input type="text" name="startup" value={formData.startup || ''} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="e.g. 5F" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">On Block (ガード)</label>
-                <input type="text" name="block" value={formData.block || ''} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="e.g. -2" />
-              </div>
-              <div className="col-span-2">
-                <label className="block text-xs font-medium text-slate-400 mb-1">On Hit (ヒット)</label>
-                <input type="text" name="hit" value={formData.hit || ''} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="e.g. +4" />
+                <input type="text" name="command" value={formData.command || ''} onChange={handleChange}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="コマンド" />
               </div>
             </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-2">Strength</label>
+              <div className="grid grid-cols-5 gap-2">
+                {STRENGTHS.map(strength => (
+                  <button type="button" key={strength} onClick={() => setFormData(prev => ({ ...prev, strength }))}
+                    className={`rounded-md border px-2 py-2 text-sm font-bold transition-colors ${STRENGTH_COLORS[strength]} ${formData.strength === strength ? 'ring-2 ring-cyan-400 ring-offset-2 ring-offset-slate-900' : 'opacity-60 hover:opacity-100'}`}>
+                    {strength}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <FrameInput label="発生" name="startup" value={formData.startup || ''} onChange={handleFrameChange} />
+              <FrameInput label="ヒット" name="hit" value={formData.hit || ''} onChange={handleFrameChange} />
+              <FrameInput label="ガード" name="block" value={formData.block || ''} onChange={handleFrameChange} />
+            </div>
+
             <div className="pt-4 flex justify-between items-center border-t border-slate-800 mt-6">
               {isCustomOrOverride ? (
-                 <button onClick={() => onDelete(formData.id)} className="text-red-400 hover:text-red-300 flex items-center text-sm px-2 py-1 rounded hover:bg-red-950/30 transition-colors"><Trash2 size={16} className="mr-1" /> Delete</button>
-              ) : <div></div>}
+                <button onClick={() => onDelete(formData.id)} className="text-red-400 hover:text-red-300 flex items-center text-sm px-2 py-1 rounded hover:bg-red-950/30 transition-colors"><Trash2 size={16} className="mr-1" /> Delete</button>
+              ) : <div />}
               <div className="flex space-x-2">
                 <button onClick={onClose} className="px-4 py-2 rounded-md text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">Cancel</button>
-                <button onClick={() => formData.name?.trim() && onSave({ ...formData, name: formData.name.trim() })} disabled={!formData.name?.trim()} className="flex items-center px-4 py-2 rounded-md text-sm font-bold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors shadow-lg shadow-cyan-900/20 disabled:opacity-50"><Save size={16} className="mr-2" /> Save</button>
+                <button onClick={() => formData.name?.trim() && onSave({ ...formData, name: formData.name.trim() })} disabled={!formData.name?.trim()}
+                  className="flex items-center px-4 py-2 rounded-md text-sm font-bold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors shadow-lg shadow-cyan-900/20 disabled:opacity-50"><Save size={16} className="mr-2" /> Save</button>
               </div>
             </div>
           </div>
@@ -830,7 +867,7 @@
       const addBlock = (type) => {
         const newBlock = type === 'text'
           ? { id: createId(), type: 'text', content: '' }
-          : { id: createId(), type: 'combo', moveIds: [], state: '通常', dmg: '', situation: '' };
+          : { id: createId(), type: 'combo', moveIds: [], state: 'ノーマル', dmg: '', situation: '' };
         setBlocks(previous => [...previous, newBlock]);
         if (type === 'combo') setEditingBlock(newBlock);
       };
@@ -867,17 +904,15 @@
                     ) : (
                       <div onClick={() => setEditingBlock(block)} className="p-3 bg-slate-950 rounded-lg border border-slate-800 cursor-pointer hover:border-cyan-700 hover:shadow-[0_0_10px_rgba(6,182,212,0.15)] transition-all">
                         <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                          {block.state && <span className={`shrink-0 rounded px-2 py-1 text-xs font-bold ${block.state === 'パニカン' ? 'bg-red-600 text-white' : block.state === 'カウンター' ? 'bg-yellow-400 text-yellow-950' : 'bg-slate-700 text-slate-100'}`}>{block.state === '通常' ? 'ノーマル' : block.state}</span>}
                           {moveIds.length > 0 ? moveIds.map((moveId, idx) => {
                             const move = moves.find(item => item.id === moveId) || moves.find(item => item.overrideId === moveId);
                             if (!move) return <span key={`${moveId}-${idx}`} className="text-red-500 text-xs">Unknown Move</span>;
                             return <React.Fragment key={`${moveId}-${idx}`}><MoveTile minimal move={move} />{idx < moveIds.length - 1 && <ChevronRight size={14} className="text-slate-500" />}</React.Fragment>;
                           }) : <span className="text-slate-500 text-sm italic">Empty Combo</span>}
+                          {block.dmg && <span className="ml-auto shrink-0 text-white text-xs font-semibold">dmg: {block.dmg}</span>}
                         </div>
-                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-cyan-400 mt-2">
-                          {block.state && <span><span className="opacity-70">状態:</span> {block.state}</span>}
-                          {block.dmg && <span><span className="opacity-70">dmg:</span> {block.dmg}</span>}
-                          {block.situation && <span className="truncate max-w-[200px]"><span className="opacity-70">状況:</span> {block.situation}</span>}
-                        </div>
+                        {block.situation && <div className="text-xs text-white mt-1 truncate"><span className="opacity-80">コンボ後の状況:</span> {block.situation}</div>}
                       </div>
                     )}
                   </div>
@@ -901,9 +936,9 @@
 
     function ComboBuilderModal({ isOpen, onClose, initialData, onSave, moves }) {
       const [activeCategory, setActiveCategory] = useState(CATEGORIES[0]);
-      const [comboData, setComboData] = useState({ moveIds: [], state: '通常', dmg: '', situation: '', ...initialData, moveIds: Array.isArray(initialData.moveIds) ? initialData.moveIds : [] });
+      const [comboData, setComboData] = useState({ moveIds: [], state: (initialData.state === '通常' ? 'ノーマル' : (initialData.state || 'ノーマル')), dmg: '', situation: '', ...initialData, state: initialData.state === '通常' ? 'ノーマル' : (initialData.state || 'ノーマル'), moveIds: Array.isArray(initialData.moveIds) ? initialData.moveIds : [] });
 
-      useEffect(() => { setComboData({ moveIds: [], state: '通常', dmg: '', situation: '', ...initialData, moveIds: Array.isArray(initialData.moveIds) ? initialData.moveIds : [] }); }, [initialData]);
+      useEffect(() => { setComboData({ moveIds: [], state: initialData.state === '通常' ? 'ノーマル' : (initialData.state || 'ノーマル'), dmg: '', situation: '', ...initialData, state: initialData.state === '通常' ? 'ノーマル' : (initialData.state || 'ノーマル'), moveIds: Array.isArray(initialData.moveIds) ? initialData.moveIds : [] }); }, [initialData]);
       if (!isOpen) return null;
 
       const currentCategoryMoves = moves.filter(m => m.category === activeCategory);
@@ -948,21 +983,21 @@
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 shrink-0 pt-2 border-t border-slate-800">
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">State (状態)</label>
-                <select name="state" value={comboData.state || '通常'} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-1.5 text-white text-sm focus:outline-none focus:border-cyan-500 appearance-none">{COMBO_STATES.map(s => <option key={s} value={s}>{s}</option>)}</select>
+                <label className="block text-xs font-medium text-slate-400 mb-1">ヒット</label>
+                <select name="state" value={comboData.state === '通常' ? 'ノーマル' : (comboData.state || 'ノーマル')} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-1.5 text-white text-sm focus:outline-none focus:border-cyan-500 appearance-none">{COMBO_STATES.map(s => <option key={s} value={s}>{s}</option>)}</select>
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">Damage (dmg)</label>
                 <input type="text" name="dmg" value={comboData.dmg || ''} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-1.5 text-white text-sm focus:outline-none focus:border-cyan-500" placeholder="e.g. 3500" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Situation (状況)</label>
+                <label className="block text-xs font-medium text-slate-400 mb-1">コンボ後の状況</label>
                 <input type="text" name="situation" value={comboData.situation || ''} onChange={handleChange} className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-1.5 text-white text-sm focus:outline-none focus:border-cyan-500" placeholder="e.g. 画面端" />
               </div>
             </div>
             <div className="pt-3 mt-2 flex justify-end space-x-2 shrink-0">
               <button onClick={onClose} className="px-4 py-2 rounded-md text-sm text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">Cancel</button>
-              <button onClick={() => onSave(comboData)} className="flex items-center px-4 py-2 rounded-md text-sm font-bold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors shadow-lg shadow-cyan-900/20"><Save size={16} className="mr-2" /> Save Combo</button>
+              <button onClick={() => onSave({ ...comboData, state: comboData.state === '通常' ? 'ノーマル' : comboData.state })} className="flex items-center px-4 py-2 rounded-md text-sm font-bold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors shadow-lg shadow-cyan-900/20"><Save size={16} className="mr-2" /> Save Combo</button>
             </div>
           </div>
         </Modal>
