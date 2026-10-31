@@ -227,6 +227,12 @@
       const [allMemos, setAllMemos] = useState([]);
       const [allFolders, setAllFolders] = useState([]);
       const [allCards, setAllCards] = useState([]);
+      const [cardSaveStates, setCardSaveStates] = useState({});
+      const reportCardSave = useCallback((id, status) => {
+        setCardSaveStates(previous => ({ ...previous, [id]: status }));
+      }, []);
+      const saveStatus = Object.values(cardSaveStates).includes('error') ? 'error'
+        : Object.values(cardSaveStates).some(v => v === 'pending' || v === 'saving') ? 'saving' : 'synced';
 
       useEffect(() => {
         if (!user) return;
@@ -288,9 +294,9 @@
               </nav>
             </div>
             <div className="flex items-center space-x-2">
-              <div className="hidden md:flex items-center text-xs text-emerald-400 bg-emerald-950/30 px-2.5 py-1.5 rounded-md border border-emerald-900/50" title="Data status">
+              <div className="hidden md:flex items-center text-xs px-2.5 py-1.5 rounded-md border ${saveStatus === 'error' ? 'text-red-400 bg-red-950/30 border-red-900/50' : saveStatus === 'saving' ? 'text-amber-400 bg-amber-950/30 border-amber-900/50' : 'text-emerald-400 bg-emerald-950/30 border-emerald-900/50'}" title="Card save status">
                 <Cloud size={14} className="mr-1.5" />
-                <span className="font-medium">{user.isAnonymous ? 'Guest Cloud' : 'Cloud Synced'}</span>
+                <span className="font-medium">{saveStatus === 'error' ? 'Save Failed' : saveStatus === 'saving' ? 'Saving...' : 'Cloud Synced'}</span>
               </div>
               <button onClick={() => auth.signOut()} className="flex items-center text-xs text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 px-2.5 py-1.5 rounded-md border border-slate-800 transition-colors" title="ログアウト">
                 <LogOut size={14} className="mr-1.5 md:mr-0" />
@@ -324,7 +330,7 @@
               <div className={activeTab === 'data' ? 'hidden h-full' : 'flex flex-1 min-h-0'}>
                 <NotesView tab={notesTab} charName={selectedChar}
                   memos={allMemos.filter(m => m.charId === selectedChar && m.tab === notesTab)}
-                  allFolders={allFolders} allCards={allCards} moves={currentMoves} db={db} user={user} appId={appId} />
+                  allFolders={allFolders} allCards={allCards} moves={currentMoves} reportCardSave={reportCardSave} db={db} user={user} appId={appId} />
               </div>
               {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} db={db} user={user} appId={appId} />}
             </main>
@@ -578,7 +584,7 @@
     }
 
     // --- Notes Tab ---
-    function NotesView({ tab, charName, memos, allFolders, allCards, moves, db, user, appId }) {
+    function NotesView({ tab, charName, memos, allFolders, allCards, moves, reportCardSave, db, user, appId }) {
       const [selectedMemoId, setSelectedMemoId] = useState(null);
       const [creatingType, setCreatingType] = useState(null);
       const [newItemTitle, setNewItemTitle] = useState('');
@@ -755,7 +761,7 @@
           <main className="flex-1 flex flex-col bg-slate-900 overflow-hidden relative">
             {selectedMemoId ? (
               <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
-                {currentCards.map((card, index) => <CardEditor key={card.id} card={card} moves={moves} db={db} appId={appId} user={user} onMove={direction => moveCard(card, direction)} isFirst={index === 0} isLast={index === currentCards.length - 1} />)}
+                {currentCards.map((card, index) => <CardEditor key={card.id} card={card} moves={moves} reportCardSave={reportCardSave} db={db} appId={appId} user={user} onMove={direction => moveCard(card, direction)} isFirst={index === 0} isLast={index === currentCards.length - 1} />)}
                 <button onClick={handleAddCard} className="w-full py-4 border-2 border-dashed border-slate-700 rounded-xl text-slate-500 hover:text-cyan-400 hover:border-cyan-500 hover:bg-slate-800/30 transition-all flex items-center justify-center font-medium"><Plus size={20} className="mr-2" /> Add New Card</button>
               </div>
             ) : <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">Select or create a memo</div>}
@@ -797,7 +803,7 @@
       return <textarea ref={ref} value={value} onChange={onChange} onBlur={onBlur} placeholder={placeholder} className={`${className} overflow-hidden resize-none`} rows={1} />;
     }
 
-    function CardEditor({ card, moves, db, appId, user, onMove, isFirst, isLast }) {
+    function CardEditor({ card, moves, db, appId, user, reportCardSave, onMove, isFirst, isLast }) {
       const [editingBlock, setEditingBlock] = useState(null);
       const initialBlocks = Array.isArray(card.blocks) ? card.blocks : [];
       const [blocks, setBlocks] = useState(initialBlocks);
@@ -806,54 +812,52 @@
       const saveQueueRef = useRef(Promise.resolve());
       const pendingRef = useRef(false);
       const lastSavedJsonRef = useRef(JSON.stringify(initialBlocks));
+      const lastQueuedJsonRef = useRef(null);
 
-      const saveBlocks = async (nextBlocks) => {
-        if (saveTimerRef.current) {
-          clearTimeout(saveTimerRef.current);
-          saveTimerRef.current = null;
-        }
-        const normalized = Array.isArray(nextBlocks) ? nextBlocks : [];
-        const json = JSON.stringify(normalized);
-        if (json === lastSavedJsonRef.current && !pendingRef.current) return;
-
-        // Queue writes so rapid edits cannot finish out of order.
-        pendingRef.current = true;
-        lastSavedJsonRef.current = json;
+      const saveBlocks = (nextBlocks = blocksRef.current) => {
+        if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+        const payload = Array.isArray(nextBlocks) ? structuredClone(nextBlocks) : [];
+        const json = JSON.stringify(payload);
+        if (json === lastQueuedJsonRef.current || (json === lastSavedJsonRef.current && !pendingRef.current)) return saveQueueRef.current;
+        lastQueuedJsonRef.current = json;
+        reportCardSave(card.id, 'saving');
         const cardRef = doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id);
-        saveQueueRef.current = saveQueueRef.current
-          .catch(() => {})
-          .then(() => updateDoc(cardRef, { blocks: normalized }));
-
-        try {
-          await saveQueueRef.current;
-          // Only clear dirty state if no newer edit has replaced this payload.
-          if (JSON.stringify(blocksRef.current) === json) pendingRef.current = false;
-        } catch (err) {
+        const write = saveQueueRef.current.catch(() => {}).then(() => updateDoc(cardRef, { blocks: payload }));
+        saveQueueRef.current = write;
+        write.then(() => {
+          lastSavedJsonRef.current = json;
+          if (JSON.stringify(blocksRef.current) === json) {
+            pendingRef.current = false;
+            reportCardSave(card.id, 'synced');
+          }
+        }).catch(err => {
           console.error('Card save failed:', err);
-          // Keep pending=true so a later navigation/unmount can retry.
-          alert(`カードを保存できませんでした: ${err.message}`);
-        }
+          lastQueuedJsonRef.current = null;
+          pendingRef.current = true;
+          reportCardSave(card.id, 'error');
+        });
+        return write;
       };
 
-      const commitBlocks = (updater) => {
+      const commitBlocks = (updater, immediate = false) => {
         const previous = blocksRef.current;
         const next = typeof updater === 'function' ? updater(previous) : updater;
-        // Update the ref before scheduling React state so navigation immediately
-        // after an edit still flushes the newest data.
         blocksRef.current = next;
         pendingRef.current = true;
         setBlocks(next);
+        reportCardSave(card.id, 'pending');
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        if (immediate) void saveBlocks(next).catch(() => {});
+        else saveTimerRef.current = setTimeout(() => { void saveBlocks(blocksRef.current).catch(() => {}); }, 350);
+      };
+
+      const updateBlock = (blockId, patch, immediate = false) => {
+        commitBlocks(previous => previous.map(block => block.id === blockId ? { ...block, ...patch } : block), immediate);
       };
 
       const incomingJson = JSON.stringify(Array.isArray(card.blocks) ? card.blocks : []);
       useEffect(() => {
-        const localJson = JSON.stringify(blocksRef.current);
-        if (incomingJson === localJson) {
-          lastSavedJsonRef.current = incomingJson;
-          pendingRef.current = false;
-          return;
-        }
-        // Do not replace local unsaved edits with an older Firestore snapshot.
+        if (incomingJson === JSON.stringify(blocksRef.current)) return;
         if (!pendingRef.current) {
           const incoming = Array.isArray(card.blocks) ? card.blocks : [];
           blocksRef.current = incoming;
@@ -862,32 +866,9 @@
         }
       }, [card.id, incomingJson]);
 
-      useEffect(() => {
+      useEffect(() => () => {
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-        const currentJson = JSON.stringify(blocks);
-        if (currentJson === lastSavedJsonRef.current && !pendingRef.current) return;
-        saveTimerRef.current = setTimeout(() => {
-          saveBlocks(blocksRef.current);
-        }, 350);
-        return () => {
-          if (saveTimerRef.current) {
-            clearTimeout(saveTimerRef.current);
-            saveTimerRef.current = null;
-          }
-        };
-      }, [blocks]);
-
-      useEffect(() => {
-        return () => {
-          if (saveTimerRef.current) {
-            clearTimeout(saveTimerRef.current);
-            saveTimerRef.current = null;
-          }
-          // Always flush dirty data when a card unmounts (memo/tab/character change).
-          if (pendingRef.current || JSON.stringify(blocksRef.current) !== lastSavedJsonRef.current) {
-            void saveBlocks(blocksRef.current);
-          }
-        };
+        if (pendingRef.current) void saveBlocks(blocksRef.current).catch(() => {});
       }, [card.id]);
 
       const handleDeleteCard = async () => {
@@ -912,7 +893,7 @@
         [next[index], next[target]] = [next[target], next[index]];
         return next;
       });
-      const handleSaveCombo = (updatedComboBlock) => { updateBlock(updatedComboBlock.id, updatedComboBlock); setEditingBlock(null); };
+      const handleSaveCombo = (updatedComboBlock) => { updateBlock(updatedComboBlock.id, updatedComboBlock, true); setEditingBlock(null); };
       const safeBlocks = Array.isArray(blocks) ? blocks : [];
 
       return (
