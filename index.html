@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG-Tool</title>
+  <title>FG Tool (Standalone)</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -201,7 +201,7 @@
       return (
         <div className="min-h-screen flex items-center justify-center bg-slate-900 p-4 font-sans text-slate-200">
           <div className="bg-slate-950 border border-slate-800 p-6 md:p-8 rounded-xl shadow-2xl max-w-md w-full">
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent mb-6 text-center">FG-Tool</h1>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent mb-6 text-center">FG Tool</h1>
             <p className="text-sm text-slate-400 mb-6 text-center leading-relaxed">複数端末でデータを同期するには、同じメールアドレスとパスワードを使用してください。初回はアカウントが作成されます。</p>
             <form onSubmit={handleAccount} className="space-y-4">
               <input type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="メールアドレス" className="w-full bg-slate-900 border border-slate-700 rounded-md px-4 py-3 text-white focus:outline-none focus:border-cyan-500" disabled={loading} required />
@@ -236,35 +236,18 @@
 
       useEffect(() => {
         if (!user) return;
-        const unsub = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'moves'),
-          snap => setAllMoves(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-          err => console.error('Moves listener error:', err));
-        return () => unsub();
-      }, [db, user, appId]);
-
-      useEffect(() => {
-        if (!user) return;
-        const unsub = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'memos'),
-          snap => setAllMemos(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-          err => console.error('Memos listener error:', err));
-        return () => unsub();
-      }, [db, user, appId]);
-
-      useEffect(() => {
-        if (!user) return;
-        const unsub = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'folders'),
-          snap => setAllFolders(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-          err => console.error('Folders listener error:', err));
-        return () => unsub();
-      }, [db, user, appId]);
-
-      useEffect(() => {
-        if (!user) return;
-        const unsub = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'cards'),
-          snap => setAllCards(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-          err => console.error('Cards listener error:', err));
-        return () => unsub();
-      }, [db, user, appId]);
+        const subscriptions = [
+          ['moves', setAllMoves],
+          ['memos', setAllMemos],
+          ['folders', setAllFolders],
+          ['cards', setAllCards]
+        ].map(([name, setter]) => onSnapshot(
+          collection(db, 'artifacts', appId, 'users', user.uid, name),
+          snapshot => setter(snapshot.docs.map(item => ({ ...item.data(), id: item.id }))),
+          error => console.error(`${name} listener error:`, error)
+        ));
+        return () => subscriptions.forEach(unsubscribe => unsubscribe());
+      }, [db, user.uid, appId]);
 
       const currentMoves = useMemo(() => {
         const customMovesForChar = allMoves.filter(m => m.charId === selectedChar);
@@ -278,10 +261,6 @@
         return [...merged, ...customOnly];
       }, [allMoves, selectedChar]);
 
-      const currentMemos = useMemo(() => {
-        return allMemos.filter(m => m.charId === selectedChar && m.tab === activeTab);
-      }, [allMemos, selectedChar, activeTab]);
-
       return (
         <div className="h-screen flex flex-col bg-slate-900 text-slate-200 font-sans overflow-hidden">
           <header className="flex-none h-14 bg-slate-950 border-b border-slate-800 flex items-center justify-between px-4 shrink-0">
@@ -289,8 +268,8 @@
               <h1 className="text-xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent mr-6 md:mr-8">FG Tool</h1>
               <nav className="flex space-x-1 md:space-x-2 h-full items-end">
                 <TabButton active={activeTab === 'data'} onClick={() => setActiveTab('data')} icon={<Book size={16} />} label="Data" />
-                <TabButton active={activeTab === 'offense'} onClick={() => { setNotesTab('offense'); setActiveTab('offense'); }} icon={<Sword size={16} />} label="Offense" />
-                <TabButton active={activeTab === 'defense'} onClick={() => { setNotesTab('defense'); setActiveTab('defense'); }} icon={<Shield size={16} />} label="Defense" />
+                <TabButton active={activeTab === 'offense'} onClick={() => { if (activeTab !== 'offense') { setNotesTab('offense'); setActiveTab('offense'); } }} icon={<Sword size={16} />} label="Offense" />
+                <TabButton active={activeTab === 'defense'} onClick={() => { if (activeTab !== 'defense') { setNotesTab('defense'); setActiveTab('defense'); } }} icon={<Shield size={16} />} label="Defense" />
               </nav>
             </div>
             <div className="flex items-center space-x-2">
@@ -314,7 +293,7 @@
                 {CHARACTERS.map(char => (
                   <button
                     key={char}
-                    onClick={() => setSelectedChar(char)}
+                    onClick={() => { if (selectedChar !== char) setSelectedChar(char); }}
                     className={`w-full text-left px-2 md:px-3 py-2 rounded-md text-xs md:text-sm font-medium transition-colors ${
                       selectedChar === char 
                         ? 'bg-cyan-900 text-cyan-400 border border-cyan-700' 
@@ -631,10 +610,17 @@
       };
 
       const handleRename = async (collectionName, id) => {
-          if (editValue.trim()) {
-              try { await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, collectionName, id), { title: editValue.trim() }); } catch(e) { console.error(e) }
-          }
-          setEditingId(null);
+        if (editingId !== id) return;
+        const title = editValue.trim();
+        setEditingId(null); // Enter and blur can otherwise save the same rename twice.
+        const items = collectionName === 'folders' ? currentFolders : currentMemos;
+        if (!title || title === items.find(item => item.id === id)?.title) return;
+        try {
+          await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, collectionName, id), { title });
+        } catch (error) {
+          console.error('Rename failed:', error);
+          alert(`名前の変更に失敗しました: ${error.message}`);
+        }
       };
 
       const handleDeleteMemo = async (memo) => {
@@ -797,10 +783,10 @@
        )
     }
 
-    function AutoExpandingTextarea({ value, onChange, onBlur, placeholder, className }) {
+    function AutoExpandingTextarea({ value, onChange, placeholder, className }) {
       const ref = useRef(null);
       useEffect(() => { if (ref.current) { ref.current.style.height = '0px'; ref.current.style.height = Math.max(60, ref.current.scrollHeight) + 'px'; } }, [value]);
-      return <textarea ref={ref} value={value} onChange={onChange} onBlur={onBlur} placeholder={placeholder} className={`${className} overflow-hidden resize-none`} rows={1} />;
+      return <textarea ref={ref} value={value} onChange={onChange} placeholder={placeholder} className={`${className} overflow-hidden resize-none`} rows={1} />;
     }
 
     function CardEditor({ card, moves, db, appId, user, reportCardSave, onMove, isFirst, isLast }) {
@@ -809,46 +795,72 @@
       const [blocks, setBlocks] = useState(initialBlocks);
       const blocksRef = useRef(initialBlocks);
       const saveTimerRef = useRef(null);
-      const saveQueueRef = useRef(Promise.resolve());
       const pendingRef = useRef(false);
-      const lastSavedJsonRef = useRef(JSON.stringify(initialBlocks));
-      const lastQueuedJsonRef = useRef(null);
+      const inFlightRef = useRef(null);
+      const savedJsonRef = useRef(JSON.stringify(initialBlocks));
+      const latestJsonRef = useRef(JSON.stringify(initialBlocks));
+      const deletedRef = useRef(false);
+      const mountedRef = useRef(true);
+      const saveContextRef = useRef({ db, appId, user, cardId: card.id, reportCardSave });
+      saveContextRef.current = { db, appId, user, cardId: card.id, reportCardSave };
 
-      const saveBlocks = (nextBlocks = blocksRef.current) => {
-        if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
-        const payload = Array.isArray(nextBlocks) ? structuredClone(nextBlocks) : [];
-        const json = JSON.stringify(payload);
-        if (json === lastQueuedJsonRef.current || (json === lastSavedJsonRef.current && !pendingRef.current)) return saveQueueRef.current;
-        lastQueuedJsonRef.current = json;
-        reportCardSave(card.id, 'saving');
-        const cardRef = doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id);
-        const write = saveQueueRef.current.catch(() => {}).then(() => updateDoc(cardRef, { blocks: payload }));
-        saveQueueRef.current = write;
-        write.then(() => {
-          lastSavedJsonRef.current = json;
-          if (JSON.stringify(blocksRef.current) === json) {
-            pendingRef.current = false;
-            reportCardSave(card.id, 'synced');
-          }
-        }).catch(err => {
-          console.error('Card save failed:', err);
-          lastQueuedJsonRef.current = null;
-          pendingRef.current = true;
-          reportCardSave(card.id, 'error');
-        });
-        return write;
+      // Only one Firestore write per card at a time. Changes made while a write
+      // is running are combined into one subsequent write (latest value wins).
+      const flushSave = () => {
+        if (saveTimerRef.current) {
+          clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
+        if (deletedRef.current) return Promise.resolve();
+        if (inFlightRef.current) return inFlightRef.current;
+        if (latestJsonRef.current === savedJsonRef.current) {
+          pendingRef.current = false;
+          reportCardSave(card.id, 'synced');
+          return Promise.resolve();
+        }
+        const { db: currentDb, appId: currentAppId, user: currentUser, cardId, reportCardSave: report } = saveContextRef.current;
+        const json = latestJsonRef.current;
+        const payload = JSON.parse(json);
+        report(cardId, 'saving');
+        const reference = doc(currentDb, 'artifacts', currentAppId, 'users', currentUser.uid, 'cards', cardId);
+        const task = updateDoc(reference, { blocks: payload })
+          .then(() => {
+            savedJsonRef.current = json;
+            if (latestJsonRef.current === json) {
+              pendingRef.current = false;
+              report(cardId, 'synced');
+            }
+          })
+          .catch(error => {
+            console.error('Card save failed:', error);
+            report(cardId, 'error');
+            throw error;
+          })
+          .finally(() => {
+            inFlightRef.current = null;
+            if (!deletedRef.current && latestJsonRef.current !== savedJsonRef.current &&
+                savedJsonRef.current === json) {
+              // An edit arrived during the request: save only its newest version.
+              void flushSave().catch(() => {});
+            }
+          });
+        inFlightRef.current = task;
+        return task;
       };
 
       const commitBlocks = (updater, immediate = false) => {
         const previous = blocksRef.current;
         const next = typeof updater === 'function' ? updater(previous) : updater;
+        const json = JSON.stringify(next);
+        if (json === latestJsonRef.current) return;
         blocksRef.current = next;
+        latestJsonRef.current = json;
         pendingRef.current = true;
         setBlocks(next);
         reportCardSave(card.id, 'pending');
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-        if (immediate) void saveBlocks(next).catch(() => {});
-        else saveTimerRef.current = setTimeout(() => { void saveBlocks(blocksRef.current).catch(() => {}); }, 350);
+        if (immediate) void flushSave().catch(() => {});
+        else saveTimerRef.current = setTimeout(() => { void flushSave().catch(() => {}); }, 250);
       };
 
       const updateBlock = (blockId, patch, immediate = false) => {
@@ -857,23 +869,35 @@
 
       const incomingJson = JSON.stringify(Array.isArray(card.blocks) ? card.blocks : []);
       useEffect(() => {
-        if (incomingJson === JSON.stringify(blocksRef.current)) return;
+        if (incomingJson === latestJsonRef.current) return;
         if (!pendingRef.current) {
           const incoming = Array.isArray(card.blocks) ? card.blocks : [];
           blocksRef.current = incoming;
-          lastSavedJsonRef.current = incomingJson;
+          latestJsonRef.current = incomingJson;
+          savedJsonRef.current = incomingJson;
           setBlocks(incoming);
         }
       }, [card.id, incomingJson]);
 
-      useEffect(() => () => {
-        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-        if (pendingRef.current) void saveBlocks(blocksRef.current).catch(() => {});
+      useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+          mountedRef.current = false;
+          if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+          if (pendingRef.current) void flushSave().catch(() => {});
+        };
       }, [card.id]);
 
       const handleDeleteCard = async () => {
         if (!window.confirm('このカードを削除しますか？')) return;
-        try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id)); }
+        try {
+          if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+          pendingRef.current = false;
+          deletedRef.current = true;
+          if (inFlightRef.current) await inFlightRef.current.catch(() => {});
+          await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id));
+          reportCardSave(card.id, 'synced');
+        }
         catch (err) { console.error(err); alert(`カードを削除できませんでした: ${err.message}`); }
       };
 
@@ -913,7 +937,7 @@
                 <div key={block.id} className="relative group/block flex gap-2">
                   <div className="flex-1 min-w-0 relative">
                     {block.type === 'text' ? (
-                      <AutoExpandingTextarea value={block.content || ''} onChange={e => updateBlock(block.id, { content: e.target.value })} onBlur={() => saveBlocks(blocksRef.current)} placeholder="Write your notes here..." className="w-full bg-transparent text-slate-200 border-none focus:ring-0 p-2 hover:bg-slate-800/30 focus:bg-slate-800/50 rounded transition-colors text-sm" />
+                      <AutoExpandingTextarea value={block.content || ''} onChange={e => updateBlock(block.id, { content: e.target.value })} placeholder="Write your notes here..." className="w-full bg-transparent text-slate-200 border-none focus:ring-0 p-2 hover:bg-slate-800/30 focus:bg-slate-800/50 rounded transition-colors text-sm" />
                     ) : (
                       <div onClick={() => setEditingBlock(block)} className="p-3 bg-slate-950 rounded-lg border border-slate-800 cursor-pointer hover:border-cyan-700 hover:shadow-[0_0_10px_rgba(6,182,212,0.15)] transition-all">
                         <div className="flex flex-wrap items-center gap-1.5 mb-2">
@@ -949,9 +973,15 @@
 
     function ComboBuilderModal({ isOpen, onClose, initialData, onSave, moves }) {
       const [activeCategory, setActiveCategory] = useState(CATEGORIES[0]);
-      const [comboData, setComboData] = useState({ moveIds: [], state: (initialData.state === '通常' ? 'ノーマル' : (initialData.state || 'ノーマル')), dmg: '', situation: '', ...initialData, state: initialData.state === '通常' ? 'ノーマル' : (initialData.state || 'ノーマル'), moveIds: Array.isArray(initialData.moveIds) ? initialData.moveIds : [] });
-
-      useEffect(() => { setComboData({ moveIds: [], state: initialData.state === '通常' ? 'ノーマル' : (initialData.state || 'ノーマル'), dmg: '', situation: '', ...initialData, state: initialData.state === '通常' ? 'ノーマル' : (initialData.state || 'ノーマル'), moveIds: Array.isArray(initialData.moveIds) ? initialData.moveIds : [] }); }, [initialData]);
+      const normalizeCombo = (data) => ({
+        ...data,
+        moveIds: Array.isArray(data.moveIds) ? data.moveIds : [],
+        state: data.state === '通常' ? 'ノーマル' : (data.state || 'ノーマル'),
+        dmg: data.dmg ?? '',
+        situation: data.situation ?? ''
+      });
+      const [comboData, setComboData] = useState(() => normalizeCombo(initialData));
+      useEffect(() => { setComboData(normalizeCombo(initialData)); }, [initialData.id]);
       if (!isOpen) return null;
 
       const currentCategoryMoves = moves.filter(m => m.category === activeCategory);
