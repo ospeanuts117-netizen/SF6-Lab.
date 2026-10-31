@@ -808,55 +808,87 @@
       const lastSavedJsonRef = useRef(JSON.stringify(initialBlocks));
 
       const saveBlocks = async (nextBlocks) => {
-        if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+        if (saveTimerRef.current) {
+          clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
         const normalized = Array.isArray(nextBlocks) ? nextBlocks : [];
         const json = JSON.stringify(normalized);
-        lastSavedJsonRef.current = json;
+        if (json === lastSavedJsonRef.current && !pendingRef.current) return;
+
+        // Queue writes so rapid edits cannot finish out of order.
         pendingRef.current = true;
+        lastSavedJsonRef.current = json;
         const cardRef = doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id);
-        saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(() => updateDoc(cardRef, { blocks: normalized }));
+        saveQueueRef.current = saveQueueRef.current
+          .catch(() => {})
+          .then(() => updateDoc(cardRef, { blocks: normalized }));
+
         try {
           await saveQueueRef.current;
-          if (lastSavedJsonRef.current === json) pendingRef.current = false;
+          // Only clear dirty state if no newer edit has replaced this payload.
+          if (JSON.stringify(blocksRef.current) === json) pendingRef.current = false;
         } catch (err) {
-          if (lastSavedJsonRef.current === json) pendingRef.current = false;
           console.error('Card save failed:', err);
+          // Keep pending=true so a later navigation/unmount can retry.
           alert(`カードを保存できませんでした: ${err.message}`);
         }
       };
 
-      useEffect(() => {
-        blocksRef.current = blocks;
-      }, [blocks]);
+      const commitBlocks = (updater) => {
+        const previous = blocksRef.current;
+        const next = typeof updater === 'function' ? updater(previous) : updater;
+        // Update the ref before scheduling React state so navigation immediately
+        // after an edit still flushes the newest data.
+        blocksRef.current = next;
+        pendingRef.current = true;
+        setBlocks(next);
+      };
 
       const incomingJson = JSON.stringify(Array.isArray(card.blocks) ? card.blocks : []);
       useEffect(() => {
-        if (!pendingRef.current || incomingJson === lastSavedJsonRef.current) {
+        const localJson = JSON.stringify(blocksRef.current);
+        if (incomingJson === localJson) {
+          lastSavedJsonRef.current = incomingJson;
+          pendingRef.current = false;
+          return;
+        }
+        // Do not replace local unsaved edits with an older Firestore snapshot.
+        if (!pendingRef.current) {
           const incoming = Array.isArray(card.blocks) ? card.blocks : [];
           blocksRef.current = incoming;
+          lastSavedJsonRef.current = incomingJson;
           setBlocks(incoming);
         }
       }, [card.id, incomingJson]);
 
       useEffect(() => {
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-        if (JSON.stringify(blocks) === lastSavedJsonRef.current) return;
-        saveTimerRef.current = setTimeout(() => saveBlocks(blocksRef.current), 450);
-        return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+        const currentJson = JSON.stringify(blocks);
+        if (currentJson === lastSavedJsonRef.current && !pendingRef.current) return;
+        saveTimerRef.current = setTimeout(() => {
+          saveBlocks(blocksRef.current);
+        }, 350);
+        return () => {
+          if (saveTimerRef.current) {
+            clearTimeout(saveTimerRef.current);
+            saveTimerRef.current = null;
+          }
+        };
       }, [blocks]);
 
       useEffect(() => {
         return () => {
           if (saveTimerRef.current) {
             clearTimeout(saveTimerRef.current);
-            if (JSON.stringify(blocksRef.current) !== lastSavedJsonRef.current) saveBlocks(blocksRef.current);
+            saveTimerRef.current = null;
+          }
+          // Always flush dirty data when a card unmounts (memo/tab/character change).
+          if (pendingRef.current || JSON.stringify(blocksRef.current) !== lastSavedJsonRef.current) {
+            void saveBlocks(blocksRef.current);
           }
         };
       }, [card.id]);
-
-      const updateBlock = (blockId, data) => {
-        setBlocks(previous => previous.map(block => block.id === blockId ? { ...block, ...data } : block));
-      };
 
       const handleDeleteCard = async () => {
         if (!window.confirm('このカードを削除しますか？')) return;
@@ -868,12 +900,12 @@
         const newBlock = type === 'text'
           ? { id: createId(), type: 'text', content: '' }
           : { id: createId(), type: 'combo', moveIds: [], state: 'ノーマル', dmg: '', situation: '' };
-        setBlocks(previous => [...previous, newBlock]);
+        commitBlocks(previous => [...previous, newBlock]);
         if (type === 'combo') setEditingBlock(newBlock);
       };
 
-      const removeBlock = (blockId) => setBlocks(previous => previous.filter(block => block.id !== blockId));
-      const moveBlock = (index, direction) => setBlocks(previous => {
+      const removeBlock = (blockId) => commitBlocks(previous => previous.filter(block => block.id !== blockId));
+      const moveBlock = (index, direction) => commitBlocks(previous => {
         const next = [...previous];
         const target = index + (direction === 'up' ? -1 : 1);
         if (target < 0 || target >= next.length) return previous;
@@ -910,8 +942,8 @@
                             if (!move) return <span key={`${moveId}-${idx}`} className="text-red-500 text-xs">Unknown Move</span>;
                             return <React.Fragment key={`${moveId}-${idx}`}><MoveTile minimal move={move} />{idx < moveIds.length - 1 && <ChevronRight size={14} className="text-slate-500" />}</React.Fragment>;
                           }) : <span className="text-slate-500 text-sm italic">Empty Combo</span>}
-                          {block.dmg && <span className="ml-auto shrink-0 text-white text-xs font-semibold">dmg: {block.dmg}</span>}
                         </div>
+                        {block.dmg && <div className="text-xs text-white font-semibold mt-1">dmg: {block.dmg}</div>}
                         {block.situation && <div className="text-xs text-white mt-1 truncate"><span className="opacity-80">コンボ後の状況:</span> {block.situation}</div>}
                       </div>
                     )}
