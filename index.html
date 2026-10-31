@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool</title>
+  <title>FG Tool (Standalone)</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -149,6 +149,25 @@
       }).filter(Boolean);
     }
 
+    // Accept a flat row array, {moves:[...]}, or category-keyed data per character.
+    // Each row keeps its stable moveId; file name supplies the character identifier.
+    function normalizeCharacterJson(data, character) {
+      let rows;
+      if (Array.isArray(data)) rows = data;
+      else if (Array.isArray(data?.moves)) rows = data.moves;
+      else if (data && typeof data === 'object') {
+        rows = CATEGORIES.flatMap(category => (Array.isArray(data[category]) ? data[category] : [])
+          .map(item => ({ ...item, category })));
+      } else throw new Error('JSON形式が正しくありません。');
+      const normalized = rows.map(row => {
+        if (row.charId && row.charId !== character) {
+          throw new Error(`ファイルとキャラクターが一致しません: ${row.charId}（期待値: ${character}）`);
+        }
+        return { ...row, charId: character, moveId: row.moveId || row.id || '' };
+      });
+      return normalizeDefaultRows(normalized);
+    }
+
     function importedDefaultMoves(rows) {
       return rows.map(row => ({
         id: `def_${encodeURIComponent(row.charId)}_${row.moveId}`,
@@ -289,27 +308,34 @@
       const [selectedChar, setSelectedChar] = useState(CHARACTERS[0]);
       
       const [allMoves, setAllMoves] = useState([]);
+      // Repository layout: index.html and moves/キャラクター名.json share a Pages root.
+      // Local Excel imports, when present, take precedence for their categories.
       const [importedRows, setImportedRows] = useState(readStoredDefaultRows);
+      const [publishedByChar, setPublishedByChar] = useState({});
       useEffect(() => {
-        if (importedRows !== null) return; // 当該ブラウザに取り込んだデータを優先
         let cancelled = false;
-        fetch('./default_moves.json', { cache: 'no-store' })
-          .then(response => { if (!response.ok) throw new Error('No published defaults'); return response.json(); })
-          .then(data => { if (!cancelled && !localStorage.getItem(IMPORT_STORAGE_KEY)) setImportedRows(normalizeDefaultRows(data)); })
-          .catch(() => {}); // JSON未配置でも既存の共通技で動作
+        const character = selectedChar;
+        if (publishedByChar[character]) return;
+        const url = new URL(`./moves/${encodeURIComponent(character)}.json`, document.baseURI);
+        fetch(url.href, { cache: 'no-cache' })
+          .then(async response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}: ${character}.json`);
+            const data = await response.json();
+            return normalizeCharacterJson(data, character);
+          })
+          .then(rows => {
+            if (!cancelled) setPublishedByChar(prev => ({ ...prev, [character]: { rows, error: null } }));
+          })
+          .catch(error => {
+            console.warn('Published move data unavailable:', url.href, error);
+            if (!cancelled) setPublishedByChar(prev => ({ ...prev, [character]: { rows: [], error: error.message } }));
+          });
         return () => { cancelled = true; };
-      }, []);
-      const handleImportDefaultRows = (charName, rows) => {
-        // Only replace the selected character; the other 31 characters stay intact.
-        // Empty charId cells in a character-only workbook mean the selected character.
-        const prepared = rows.map(row => ({ ...row, charId: String(row.charId ?? '').trim() || charName }));
-        const incompatible = prepared.find(row => String(row.name ?? '').trim() && row.charId !== charName);
-        if (incompatible) throw new Error(`選択中は「${charName}」ですが、Excelには「${incompatible.charId}」の技が含まれています。キャラクターを切り替えてから取り込んでください。`);
-        const parsed = normalizeDefaultRows(prepared);
-        const previous = importedRows || [];
-        const combined = normalizeDefaultRows([...previous.filter(row => row.charId !== charName), ...parsed]);
-        localStorage.setItem(IMPORT_STORAGE_KEY, JSON.stringify(combined));
-        setImportedRows(combined);
+      }, [selectedChar, publishedByChar[selectedChar] === undefined]);
+      const handleImportDefaultRows = (rows) => {
+        const parsed = normalizeDefaultRows(rows);
+        localStorage.setItem(IMPORT_STORAGE_KEY, JSON.stringify(parsed));
+        setImportedRows(parsed);
         return parsed.length;
       };
       const handleClearDefaultRows = () => {
@@ -398,11 +424,15 @@
       const currentMoves = useMemo(() => {
         const customMovesForChar = visibleMoves.filter(m => m.charId === selectedChar);
         const merged = [];
-        const importedForChar = importedRows ? importedDefaultMoves(importedRows.filter(r => r.charId === selectedChar)) : [];
-        const importedCategories = new Set(importedForChar.map(m => m.category));
+        const publishedForChar = importedDefaultMoves(publishedByChar[selectedChar]?.rows || []);
+        const localForChar = importedRows ? importedDefaultMoves(importedRows.filter(r => r.charId === selectedChar)) : [];
+        const localCategories = new Set(localForChar.map(m => m.category));
+        const publishedCategories = new Set(publishedForChar.map(m => m.category));
+        const overriddenCategories = new Set([...localCategories, ...publishedCategories]);
         const activeDefaults = [
-          ...ALL_DEFAULT_MOVES.filter(def => !importedCategories.has(def.category)),
-          ...importedForChar
+          ...ALL_DEFAULT_MOVES.filter(def => !overriddenCategories.has(def.category)),
+          ...publishedForChar.filter(def => !localCategories.has(def.category)),
+          ...localForChar
         ];
         activeDefaults.forEach(def => {
           const override = customMovesForChar.find(m => m.overrideId === def.id);
@@ -411,7 +441,7 @@
         });
         const customOnly = customMovesForChar.filter(m => !m.overrideId);
         return [...merged, ...customOnly];
-      }, [allMoves, optimistic, selectedChar, importedRows]);
+      }, [visibleMoves, selectedChar, importedRows, publishedByChar]);
 
       return (
         <div className="h-screen flex flex-col bg-slate-900 text-slate-200 font-sans overflow-hidden">
@@ -459,7 +489,7 @@
                   memos={visibleMemos.filter(m => m.charId === selectedChar && m.tab === notesTab)}
                   allFolders={visibleFolders} allCards={visibleCards} moves={currentMoves} stageCard={stageCard} db={db} user={user} appId={appId} />
               </div>
-              {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} importedRows={importedRows} onImportDefaults={handleImportDefaultRows} onClearDefaults={handleClearDefaultRows} applyLocalWrite={applyLocalWrite} db={db} user={user} appId={appId} />}
+              {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} importedRows={importedRows} publishedInfo={publishedByChar[selectedChar]} onImportDefaults={handleImportDefaultRows} onClearDefaults={handleClearDefaultRows} applyLocalWrite={applyLocalWrite} db={db} user={user} appId={appId} />}
             </main>
           </div>
         </div>
@@ -498,7 +528,7 @@
     }
 
     // --- Data Tab ---
-    function DataView({ charName, moves, db, user, appId, applyLocalWrite, importedRows, onImportDefaults, onClearDefaults }) {
+    function DataView({ charName, moves, db, user, appId, applyLocalWrite, importedRows, publishedInfo, onImportDefaults, onClearDefaults }) {
       const [activeCategory, setActiveCategory] = useState(CATEGORIES[0]);
       const [editingMove, setEditingMove] = useState(null);
       const importInputRef = useRef(null);
@@ -513,8 +543,8 @@
           const sheet = workbook.Sheets['技データ'] || workbook.Sheets[workbook.SheetNames[0]];
           if (!sheet) throw new Error('技データシートがありません。');
           const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
-          const total = onImportDefaults(charName, rows);
-          setImportMessage(`${charName}の技 ${total}件を取り込みました。他のキャラクターのデータは保持されます。`);
+          const total = onImportDefaults(rows);
+          setImportMessage(`${total}件の技を取り込みました（このブラウザに保存）。キャラクターを選択してExport JSONを押すと、キャラクター名.jsonを出力できます。`);
         } catch (error) {
           console.error('Move import failed:', error);
           setImportMessage(`取り込み失敗: ${error.message}`);
@@ -523,19 +553,27 @@
           event.target.value = '';
         }
       };
-      const downloadJson = (rows, filename) => {
+      const exportDefaultJson = () => {
+        const localRows = importedRows?.filter(row => row.charId === charName) || [];
+        const categories = new Set(localRows.map(row => row.category));
+        const rows = [
+          ...(publishedInfo?.rows || []).filter(row => !categories.has(row.category)),
+          ...localRows
+        ];
+        if (!rows.length) {
+          setImportMessage(`${charName}のエクスポート対象データがありません。先にExcelを取り込んでください。`);
+          return;
+        }
         const payload = JSON.stringify(rows, null, 2);
         const url = URL.createObjectURL(new Blob([payload], { type: 'application/json;charset=utf-8' }));
         const link = document.createElement('a');
         link.href = url;
-        link.download = filename;
+        link.download = `${charName}.json`;
         document.body.appendChild(link);
         link.click(); link.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setImportMessage(`${charName}.json を出力しました。GitHubのmoves/フォルダーへ配置してください。`);
       };
-      const exportDefaultJson = () => downloadJson(importedRows || [], 'default_moves.json');
-      const characterRows = (importedRows || []).filter(row => row.charId === charName);
-      const exportCharacterJson = () => downloadJson(characterRows, `default_moves_${charName.replace(/[^\p{L}\p{N}._-]/gu, '_')}.json`);
 
 
       const displayedMoves = useMemo(() => {
@@ -579,11 +617,10 @@
         <div className="flex flex-col h-full">
           <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-800 shrink-0">
             <input ref={importInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={importWorkbook} />
-            <button onClick={() => importInputRef.current?.click()} className="px-3 py-1.5 text-xs font-bold rounded bg-cyan-800 hover:bg-cyan-700 text-white" title="選択中のキャラクターの技データだけを入れ替えます">Import Excel ({charName})</button>
-            <button onClick={exportCharacterJson} disabled={!characterRows.length} className="px-3 py-1.5 text-xs rounded border border-cyan-600 text-cyan-300 disabled:opacity-40 hover:bg-slate-800">Export {charName} JSON</button>
-            <button onClick={exportDefaultJson} disabled={!importedRows?.length} className="px-3 py-1.5 text-xs rounded border border-slate-600 disabled:opacity-40 hover:bg-slate-800">Export All JSON</button>
+            <button onClick={() => importInputRef.current?.click()} className="px-3 py-1.5 text-xs font-bold rounded bg-cyan-800 hover:bg-cyan-700 text-white">Import Excel</button>
+            <button onClick={exportDefaultJson} disabled={!importedRows?.some(row => row.charId === charName) && !publishedInfo?.rows?.length} className="px-3 py-1.5 text-xs rounded border border-slate-600 disabled:opacity-40 hover:bg-slate-800">Export JSON</button>
             <button onClick={() => { if (confirm('このブラウザのデフォルト技設定を解除しますか？')) { onClearDefaults(); setImportMessage('ローカルの取り込みを解除しました。'); } }} className="px-3 py-1.5 text-xs text-slate-400 hover:text-white">Reset defaults</button>
-            <span className="text-xs text-slate-400">{`${charName}: ${characterRows.length}件 / 全体: ${(importedRows || []).length}件`}</span>
+            <span className="text-xs text-slate-400">{publishedInfo?.rows?.length ? `GitHub: ${publishedInfo.rows.length}件` : publishedInfo?.error ? 'GitHub JSONなし（共通テンプレート）' : 'GitHub技データ確認中…'}</span>
             {importMessage && <span className="text-xs text-cyan-300 break-words">{importMessage}</span>}
           </div>
           {/* Category Tabs */}
