@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool</title>
+  <title>FG Tool (Standalone)</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -609,7 +609,7 @@
     }
 
     // --- Notes Tab ---
-    function NotesView({ tab, charName, memos, allFolders, allCards, moves, db, user, appId, applyLocalWrite }) {
+    function NotesView({ tab, charName, memos, allFolders, allCards, moves, db, user, appId, applyLocalWrite, stageCard }) {
       const [selectedMemoId, setSelectedMemoId] = useState(null);
       const [creatingType, setCreatingType] = useState(null);
       const [newItemTitle, setNewItemTitle] = useState('');
@@ -748,11 +748,19 @@
 
       const currentCards = useMemo(() => allCards.filter(c => c.memoId === selectedMemoId).sort((a, b) => (a.order || 0) - (b.order || 0)), [allCards, selectedMemoId]);
 
-      const handleAddCard = async () => {
+      const handleAddCard = () => {
         if (!selectedMemoId) return;
         try {
-          await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'cards'), { memoId: selectedMemoId, blocks: [{ id: createId(), type: 'text', content: '' }], order: currentCards.length });
-        } catch (err) { console.error(err); }
+          const reference = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'cards'));
+          applyLocalWrite('cards', reference, {
+            memoId: selectedMemoId,
+            blocks: [{ id: createId(), type: 'text', content: '' }],
+            order: currentCards.length
+          });
+        } catch (err) {
+          console.error('Card creation failed:', err);
+          alert(`カードを追加できませんでした: ${err.message}`);
+        }
       };
 
       return (
