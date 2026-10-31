@@ -29,7 +29,7 @@
   <div id="root"></div>
 
   <script type="text/babel" data-type="module">
-    import React, { useState, useEffect, useMemo, useRef } from 'react';
+    import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
     import { createRoot } from 'react-dom/client';
     import { initializeApp } from 'firebase/app';
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
@@ -294,7 +294,7 @@
               </nav>
             </div>
             <div className="flex items-center space-x-2">
-              <div className="hidden md:flex items-center text-xs px-2.5 py-1.5 rounded-md border ${saveStatus === 'error' ? 'text-red-400 bg-red-950/30 border-red-900/50' : saveStatus === 'saving' ? 'text-amber-400 bg-amber-950/30 border-amber-900/50' : 'text-emerald-400 bg-emerald-950/30 border-emerald-900/50'}" title="Card save status">
+              <div className={`hidden md:flex items-center text-xs px-2.5 py-1.5 rounded-md border ${saveStatus === 'error' ? 'text-red-400 bg-red-950/30 border-red-900/50' : saveStatus === 'saving' ? 'text-amber-400 bg-amber-950/30 border-amber-900/50' : 'text-emerald-400 bg-emerald-950/30 border-emerald-900/50'}`} title="Card save status">
                 <Cloud size={14} className="mr-1.5" />
                 <span className="font-medium">{saveStatus === 'error' ? 'Save Failed' : saveStatus === 'saving' ? 'Saving...' : 'Cloud Synced'}</span>
               </div>
