@@ -40,13 +40,14 @@
     const isEnvProvided = typeof window.__firebase_config !== 'undefined';
     
     // 【重要】個人で独立したページとして公開する場合、ご自身の無料Firebaseプロジェクトの設定をここに貼り付けてください。
-    const standaloneConfig = {
-      apiKey: "YOUR_API_KEY",
-      authDomain: "YOUR_AUTH_DOMAIN",
-      projectId: "YOUR_PROJECT_ID",
-      storageBucket: "YOUR_STORAGE_BUCKET",
-      messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-      appId: "YOUR_APP_ID"
+    const Config = {
+      apiKey: "AIzaSyALJwiCDwAWmuYB8Bhd3VyxLP922A2Uo2k",
+  authDomain: "fg-tool.firebaseapp.com",
+  projectId: "fg-tool",
+  storageBucket: "fg-tool.firebasestorage.app",
+  messagingSenderId: "113539189260",
+  appId: "1:113539189260:web:527e29852946c26581bc29",
+  measurementId: "G-70YY0Q3L03"
     };
 
     const firebaseConfig = isEnvProvided ? JSON.parse(window.__firebase_config) : standaloneConfig;
