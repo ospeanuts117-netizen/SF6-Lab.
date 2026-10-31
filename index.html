@@ -551,6 +551,11 @@
         else if (currentMemos.length === 0) setSelectedMemoId(null);
       }, [currentMemos, charName, tab]); 
 
+      const openCreateModal = (type) => {
+        setNewItemTitle('');
+        setCreatingType(type);
+      };
+
       const handleCreate = async () => {
         if (!newItemTitle.trim()) return;
         try {
@@ -629,8 +634,8 @@
               <span className="text-sm font-semibold text-slate-300 hidden md:inline">Folders & Memos</span>
               <span className="text-sm font-semibold text-slate-300 md:hidden">Memos</span>
               <div className="flex space-x-1">
-                  <button onClick={() => setCreatingType('folder')} className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors" title="New Folder"><FolderPlus size={16} /></button>
-                  <button onClick={() => setCreatingType({type: 'memo', folderId: null})} className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors" title="New Root Memo"><FilePlus size={16} /></button>
+                  <button onClick={() => openCreateModal('folder')} className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors" title="New Folder"><FolderPlus size={16} /></button>
+                  <button onClick={() => openCreateModal({type: 'memo', folderId: null})} className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors" title="New Root Memo"><FilePlus size={16} /></button>
               </div>
             </div>
             <div className={`flex-1 overflow-y-auto p-2 space-y-2 pb-20 ${dragOverTarget === 'root' ? 'bg-slate-800/20' : ''}`} onDragOver={(e) => { e.preventDefault(); setDragOverTarget('root'); }} onDrop={(e) => handleDrop(e, 'root', null, null)}>
@@ -643,7 +648,7 @@
                      </div>
                      <div className="flex space-x-1 opacity-0 group-hover/folder:opacity-100 transition-opacity ml-2 shrink-0">
                         <button onClick={(e) => { e.stopPropagation(); setEditingId(folder.id); setEditValue(folder.title); }} className="hover:text-cyan-400 p-0.5"><Pencil size={12}/></button>
-                        <button onClick={(e) => { e.stopPropagation(); setCreatingType({type:'memo', folderId: folder.id}); }} className="hover:text-cyan-400 p-0.5"><Plus size={12}/></button>
+                        <button onClick={(e) => { e.stopPropagation(); openCreateModal({type:'memo', folderId: folder.id}); }} className="hover:text-cyan-400 p-0.5"><Plus size={12}/></button>
                      </div>
                   </div>
                   <div className="pl-3 mt-1 space-y-0.5 min-h-[4px]">
@@ -712,7 +717,10 @@
         try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id)); } catch (err) { console.error(err); }
       };
 
-      const updateBlock = (blockId, data) => updateCard(card.blocks.map(b => b.id === blockId ? { ...b, ...data } : b));
+      const updateBlock = (blockId, data) => {
+        const newBlocks = card.blocks.map(b => b.id === blockId ? { ...b, ...data } : b);
+        updateCard(newBlocks);
+      };
 
       const addBlock = (type) => {
         const newBlock = type === 'text' ? { id: Date.now().toString(), type: 'text', content: '' } : { id: Date.now().toString(), type: 'combo', moveIds: [], state: '通常', dmg: '', situation: '' };
@@ -742,7 +750,7 @@
               <div key={block.id} className="relative group/block flex gap-2">
                 <div className="flex-1 min-w-0 relative">
                   {block.type === 'text' ? (
-                    <AutoExpandingTextarea value={block.content} onChange={(e) => updateBlock(block.id, { content: e.target.value })} placeholder="Write your notes here..." className="w-full bg-transparent text-slate-200 border-none focus:ring-0 p-2 hover:bg-slate-800/30 focus:bg-slate-800/50 rounded transition-colors text-sm" />
+                    <AutoExpandingTextarea value={block.content || ''} onChange={(e) => updateBlock(block.id, { content: e.target.value })} placeholder="Write your notes here..." className="w-full bg-transparent text-slate-200 border-none focus:ring-0 p-2 hover:bg-slate-800/30 focus:bg-slate-800/50 rounded transition-colors text-sm" />
                   ) : (
                     <div onClick={() => setEditingBlock(block)} className="p-3 bg-slate-950 rounded-lg border border-slate-800 cursor-pointer hover:border-cyan-700 hover:shadow-[0_0_10px_rgba(6,182,212,0.15)] transition-all">
                       <div className="flex flex-wrap items-center gap-1.5 mb-2">
