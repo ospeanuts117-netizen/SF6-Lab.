@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool (Standalone)</title>
+  <title>FG Tool</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -295,14 +295,21 @@
         let cancelled = false;
         fetch('./default_moves.json', { cache: 'no-store' })
           .then(response => { if (!response.ok) throw new Error('No published defaults'); return response.json(); })
-          .then(data => { if (!cancelled) setImportedRows(normalizeDefaultRows(data)); })
+          .then(data => { if (!cancelled && !localStorage.getItem(IMPORT_STORAGE_KEY)) setImportedRows(normalizeDefaultRows(data)); })
           .catch(() => {}); // JSON未配置でも既存の共通技で動作
         return () => { cancelled = true; };
       }, []);
-      const handleImportDefaultRows = (rows) => {
-        const parsed = normalizeDefaultRows(rows);
-        localStorage.setItem(IMPORT_STORAGE_KEY, JSON.stringify(parsed));
-        setImportedRows(parsed);
+      const handleImportDefaultRows = (charName, rows) => {
+        // Only replace the selected character; the other 31 characters stay intact.
+        // Empty charId cells in a character-only workbook mean the selected character.
+        const prepared = rows.map(row => ({ ...row, charId: String(row.charId ?? '').trim() || charName }));
+        const incompatible = prepared.find(row => String(row.name ?? '').trim() && row.charId !== charName);
+        if (incompatible) throw new Error(`選択中は「${charName}」ですが、Excelには「${incompatible.charId}」の技が含まれています。キャラクターを切り替えてから取り込んでください。`);
+        const parsed = normalizeDefaultRows(prepared);
+        const previous = importedRows || [];
+        const combined = normalizeDefaultRows([...previous.filter(row => row.charId !== charName), ...parsed]);
+        localStorage.setItem(IMPORT_STORAGE_KEY, JSON.stringify(combined));
+        setImportedRows(combined);
         return parsed.length;
       };
       const handleClearDefaultRows = () => {
@@ -506,8 +513,8 @@
           const sheet = workbook.Sheets['技データ'] || workbook.Sheets[workbook.SheetNames[0]];
           if (!sheet) throw new Error('技データシートがありません。');
           const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
-          const total = onImportDefaults(rows);
-          setImportMessage(`${total}件の技を取り込みました（このブラウザに保存）。全利用者への配布にはExport JSONをご利用ください。`);
+          const total = onImportDefaults(charName, rows);
+          setImportMessage(`${charName}の技 ${total}件を取り込みました。他のキャラクターのデータは保持されます。`);
         } catch (error) {
           console.error('Move import failed:', error);
           setImportMessage(`取り込み失敗: ${error.message}`);
@@ -516,16 +523,19 @@
           event.target.value = '';
         }
       };
-      const exportDefaultJson = () => {
-        const payload = JSON.stringify(importedRows || [], null, 2);
+      const downloadJson = (rows, filename) => {
+        const payload = JSON.stringify(rows, null, 2);
         const url = URL.createObjectURL(new Blob([payload], { type: 'application/json;charset=utf-8' }));
         const link = document.createElement('a');
         link.href = url;
-        link.download = 'default_moves.json';
+        link.download = filename;
         document.body.appendChild(link);
         link.click(); link.remove();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
       };
+      const exportDefaultJson = () => downloadJson(importedRows || [], 'default_moves.json');
+      const characterRows = (importedRows || []).filter(row => row.charId === charName);
+      const exportCharacterJson = () => downloadJson(characterRows, `default_moves_${charName.replace(/[^\p{L}\p{N}._-]/gu, '_')}.json`);
 
 
       const displayedMoves = useMemo(() => {
@@ -569,10 +579,11 @@
         <div className="flex flex-col h-full">
           <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-800 shrink-0">
             <input ref={importInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={importWorkbook} />
-            <button onClick={() => importInputRef.current?.click()} className="px-3 py-1.5 text-xs font-bold rounded bg-cyan-800 hover:bg-cyan-700 text-white">Import Excel</button>
-            <button onClick={exportDefaultJson} disabled={!importedRows?.length} className="px-3 py-1.5 text-xs rounded border border-slate-600 disabled:opacity-40 hover:bg-slate-800">Export JSON</button>
+            <button onClick={() => importInputRef.current?.click()} className="px-3 py-1.5 text-xs font-bold rounded bg-cyan-800 hover:bg-cyan-700 text-white" title="選択中のキャラクターの技データだけを入れ替えます">Import Excel ({charName})</button>
+            <button onClick={exportCharacterJson} disabled={!characterRows.length} className="px-3 py-1.5 text-xs rounded border border-cyan-600 text-cyan-300 disabled:opacity-40 hover:bg-slate-800">Export {charName} JSON</button>
+            <button onClick={exportDefaultJson} disabled={!importedRows?.length} className="px-3 py-1.5 text-xs rounded border border-slate-600 disabled:opacity-40 hover:bg-slate-800">Export All JSON</button>
             <button onClick={() => { if (confirm('このブラウザのデフォルト技設定を解除しますか？')) { onClearDefaults(); setImportMessage('ローカルの取り込みを解除しました。'); } }} className="px-3 py-1.5 text-xs text-slate-400 hover:text-white">Reset defaults</button>
-            <span className="text-xs text-slate-400">{importedRows?.length ? `デフォルト技 ${importedRows.length}件` : '共通テンプレート表示中'}</span>
+            <span className="text-xs text-slate-400">{`${charName}: ${characterRows.length}件 / 全体: ${(importedRows || []).length}件`}</span>
             {importMessage && <span className="text-xs text-cyan-300 break-words">{importMessage}</span>}
           </div>
           {/* Category Tabs */}
