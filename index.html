@@ -73,7 +73,7 @@
       "A.K.I.", "アルジュン", "アレックス", "イングリッド", "エド", "エドモンド本田", "エレナ", "ガイル", "キャミィ", "キンバリー", "C.ヴァイパー", "ケン", "豪鬼", "サガット", "ザンギエフ", "ジェイミー", "JP", "ジュリ", "ダルシム", "春麗", "ディージェイ", "テリー", "ベガ", "ブランカ", "舞", "マノン", "マリーザ", "ヤスミン", "ラシード", "リュウ", "リリー", "ルーク"
     ];
 
-    const CATEGORIES = ['①通常技', '②特殊技', '③必殺技', '④SA', '⑤通常投げ', '⑥共通行動'];
+    const CATEGORIES = ['通常技', '特殊技', '必殺技', 'SA', '通常投げ', '共通行動'];
     const STRENGTHS = ['弱', '中', '強', 'OD', 'その他'];
     const COMBO_STATES = ['通常', 'カウンター', 'パニカン'];
 
@@ -97,7 +97,7 @@
       Object.entries(DEFAULT_MOVES_DATA).forEach(([category, names]) => {
         names.forEach(name => {
           let strength = 'その他';
-          if (category === '①通常技') {
+          if (category === '通常技') {
             if (name.includes('弱')) strength = '弱';
             else if (name.includes('中')) strength = '中';
             else if (name.includes('強')) strength = '強';
