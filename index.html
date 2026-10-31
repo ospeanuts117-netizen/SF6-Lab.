@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool</title>
+  <title>FG Tool (Standalone)</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -22,11 +22,13 @@
     }
   </script>
   
+  <!-- Excel library is loaded on demand, so it cannot block initial rendering. -->
+
   <!-- Babel for running React directly in browser -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body class="bg-slate-900 text-slate-200">
-  <div id="root"></div>
+  <div id="root"><div style="padding:32px;color:#94a3b8;font-family:sans-serif">FG Tool を読み込み中…<div style="font-size:12px;margin-top:8px">このまま表示されない場合は、インターネット接続とブラウザのコンソールを確認してください。</div></div></div>
 
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useMemo, useRef } from 'react';
@@ -115,6 +117,69 @@
       return defaults;
     };
     const ALL_DEFAULT_MOVES = generateDefaultMoves();
+    const IMPORT_STORAGE_KEY = 'fg-tool-default-moves-v1';
+    const DEFAULT_COLUMNS = ['charId', 'category', 'moveId', 'name', 'command', 'strength', 'startup', 'hit', 'block'];
+
+    const readStoredDefaultRows = () => {
+      try {
+        const raw = localStorage.getItem(IMPORT_STORAGE_KEY);
+        return raw ? normalizeDefaultRows(JSON.parse(raw)) : null;
+      } catch (error) {
+        console.warn('Unable to read local default moves:', error);
+        return null;
+      }
+    };
+
+    function normalizeDefaultRows(input) {
+      const source = Array.isArray(input) ? input : input && Array.isArray(input.moves) ? input.moves : null;
+      if (!source) throw new Error('技データは行の配列で指定してください。');
+      const seen = new Set();
+      return source.map((row, index) => {
+        const item = Object.fromEntries(DEFAULT_COLUMNS.map(key => [key, String(row?.[key] ?? '').trim()]));
+        if (!item.name) return null; // テンプレートの未入力行は無視
+        if (!CHARACTERS.includes(item.charId)) throw new Error(`${index + 2}行目: 不明なキャラクター ${item.charId}`);
+        if (!CATEGORIES.includes(item.category)) throw new Error(`${index + 2}行目: 不明なカテゴリ ${item.category}`);
+        if (!item.moveId) throw new Error(`${index + 2}行目: moveId がありません。`);
+        if (!/^[a-zA-Z0-9_-]+$/.test(item.moveId)) throw new Error(`${index + 2}行目: moveId は英数字・_・-のみ使用できます。`);
+        if (item.strength && !STRENGTHS.includes(item.strength)) throw new Error(`${index + 2}行目: 不正な強度 ${item.strength}`);
+        const key = `${item.charId}::${item.moveId}`;
+        if (seen.has(key)) throw new Error(`${index + 2}行目: moveId の重複 ${key}`);
+        seen.add(key);
+        return item;
+      }).filter(Boolean);
+    }
+
+    function importedDefaultMoves(rows) {
+      return rows.map(row => ({
+        id: `def_${encodeURIComponent(row.charId)}_${row.moveId}`,
+        charId: row.charId,
+        category: row.category,
+        name: row.name,
+        command: row.command,
+        strength: row.strength || 'その他',
+        startup: row.startup,
+        hit: row.hit,
+        block: row.block,
+        isDefault: true
+      }));
+    }
+
+
+    // Excel parsing is optional and loaded only when the user imports a workbook.
+    let excelLibraryPromise = null;
+    function loadExcelLibrary() {
+      if (window.XLSX) return Promise.resolve(window.XLSX);
+      if (excelLibraryPromise) return excelLibraryPromise;
+      excelLibraryPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+        script.async = true;
+        script.onload = () => window.XLSX ? resolve(window.XLSX) : reject(new Error('Excelライブラリを読み込めませんでした。'));
+        script.onerror = () => reject(new Error('Excelライブラリを読み込めませんでした。ネット接続をご確認ください。'));
+        document.head.appendChild(script);
+      }).catch(error => { excelLibraryPromise = null; throw error; });
+      return excelLibraryPromise;
+    }
 
     // --- Components ---
 
@@ -224,6 +289,26 @@
       const [selectedChar, setSelectedChar] = useState(CHARACTERS[0]);
       
       const [allMoves, setAllMoves] = useState([]);
+      const [importedRows, setImportedRows] = useState(readStoredDefaultRows);
+      useEffect(() => {
+        if (importedRows !== null) return; // 当該ブラウザに取り込んだデータを優先
+        let cancelled = false;
+        fetch('./default_moves.json', { cache: 'no-store' })
+          .then(response => { if (!response.ok) throw new Error('No published defaults'); return response.json(); })
+          .then(data => { if (!cancelled) setImportedRows(normalizeDefaultRows(data)); })
+          .catch(() => {}); // JSON未配置でも既存の共通技で動作
+        return () => { cancelled = true; };
+      }, []);
+      const handleImportDefaultRows = (rows) => {
+        const parsed = normalizeDefaultRows(rows);
+        localStorage.setItem(IMPORT_STORAGE_KEY, JSON.stringify(parsed));
+        setImportedRows(parsed);
+        return parsed.length;
+      };
+      const handleClearDefaultRows = () => {
+        localStorage.removeItem(IMPORT_STORAGE_KEY);
+        setImportedRows(null);
+      };
       const [allMemos, setAllMemos] = useState([]);
       const [allFolders, setAllFolders] = useState([]);
       const [allCards, setAllCards] = useState([]);
@@ -306,14 +391,20 @@
       const currentMoves = useMemo(() => {
         const customMovesForChar = visibleMoves.filter(m => m.charId === selectedChar);
         const merged = [];
-        ALL_DEFAULT_MOVES.forEach(def => {
+        const importedForChar = importedRows ? importedDefaultMoves(importedRows.filter(r => r.charId === selectedChar)) : [];
+        const importedCategories = new Set(importedForChar.map(m => m.category));
+        const activeDefaults = [
+          ...ALL_DEFAULT_MOVES.filter(def => !importedCategories.has(def.category)),
+          ...importedForChar
+        ];
+        activeDefaults.forEach(def => {
           const override = customMovesForChar.find(m => m.overrideId === def.id);
           if (override) merged.push({ ...override, isDefaultOverride: true });
           else merged.push(def);
         });
         const customOnly = customMovesForChar.filter(m => !m.overrideId);
         return [...merged, ...customOnly];
-      }, [allMoves, optimistic, selectedChar]);
+      }, [allMoves, optimistic, selectedChar, importedRows]);
 
       return (
         <div className="h-screen flex flex-col bg-slate-900 text-slate-200 font-sans overflow-hidden">
@@ -361,7 +452,7 @@
                   memos={visibleMemos.filter(m => m.charId === selectedChar && m.tab === notesTab)}
                   allFolders={visibleFolders} allCards={visibleCards} moves={currentMoves} stageCard={stageCard} db={db} user={user} appId={appId} />
               </div>
-              {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} applyLocalWrite={applyLocalWrite} db={db} user={user} appId={appId} />}
+              {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} importedRows={importedRows} onImportDefaults={handleImportDefaultRows} onClearDefaults={handleClearDefaultRows} applyLocalWrite={applyLocalWrite} db={db} user={user} appId={appId} />}
             </main>
           </div>
         </div>
@@ -400,9 +491,42 @@
     }
 
     // --- Data Tab ---
-    function DataView({ charName, moves, db, user, appId, applyLocalWrite }) {
+    function DataView({ charName, moves, db, user, appId, applyLocalWrite, importedRows, onImportDefaults, onClearDefaults }) {
       const [activeCategory, setActiveCategory] = useState(CATEGORIES[0]);
       const [editingMove, setEditingMove] = useState(null);
+      const importInputRef = useRef(null);
+      const [importMessage, setImportMessage] = useState('');
+      const importWorkbook = async event => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        try {
+          const XLSX = await loadExcelLibrary();
+          const binary = await file.arrayBuffer();
+          const workbook = XLSX.read(binary, { type: 'array' });
+          const sheet = workbook.Sheets['技データ'] || workbook.Sheets[workbook.SheetNames[0]];
+          if (!sheet) throw new Error('技データシートがありません。');
+          const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+          const total = onImportDefaults(rows);
+          setImportMessage(`${total}件の技を取り込みました（このブラウザに保存）。全利用者への配布にはExport JSONをご利用ください。`);
+        } catch (error) {
+          console.error('Move import failed:', error);
+          setImportMessage(`取り込み失敗: ${error.message}`);
+          alert(`Excelを読み込めませんでした: ${error.message}`);
+        } finally {
+          event.target.value = '';
+        }
+      };
+      const exportDefaultJson = () => {
+        const payload = JSON.stringify(importedRows || [], null, 2);
+        const url = URL.createObjectURL(new Blob([payload], { type: 'application/json;charset=utf-8' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'default_moves.json';
+        document.body.appendChild(link);
+        link.click(); link.remove();
+        URL.revokeObjectURL(url);
+      };
+
 
       const displayedMoves = useMemo(() => {
         return moves.filter(m => m.category === activeCategory);
@@ -443,6 +567,14 @@
 
       return (
         <div className="flex flex-col h-full">
+          <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-slate-900 border-b border-slate-800 shrink-0">
+            <input ref={importInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={importWorkbook} />
+            <button onClick={() => importInputRef.current?.click()} className="px-3 py-1.5 text-xs font-bold rounded bg-cyan-800 hover:bg-cyan-700 text-white">Import Excel</button>
+            <button onClick={exportDefaultJson} disabled={!importedRows?.length} className="px-3 py-1.5 text-xs rounded border border-slate-600 disabled:opacity-40 hover:bg-slate-800">Export JSON</button>
+            <button onClick={() => { if (confirm('このブラウザのデフォルト技設定を解除しますか？')) { onClearDefaults(); setImportMessage('ローカルの取り込みを解除しました。'); } }} className="px-3 py-1.5 text-xs text-slate-400 hover:text-white">Reset defaults</button>
+            <span className="text-xs text-slate-400">{importedRows?.length ? `デフォルト技 ${importedRows.length}件` : '共通テンプレート表示中'}</span>
+            {importMessage && <span className="text-xs text-cyan-300 break-words">{importMessage}</span>}
+          </div>
           {/* Category Tabs */}
           <div className="flex overflow-x-auto bg-slate-950 border-b border-slate-800 shrink-0 p-2 space-x-1">
             {CATEGORIES.map(cat => (
@@ -1135,8 +1267,17 @@
       );
     }
 
+    class DisplayErrorBoundary extends React.Component {
+      constructor(props) { super(props); this.state = { error: null }; }
+      static getDerivedStateFromError(error) { return { error }; }
+      componentDidCatch(error, info) { console.error('FG Tool render error:', error, info); }
+      render() {
+        if (!this.state.error) return this.props.children;
+        return <div className="min-h-screen bg-slate-900 text-slate-200 flex items-center justify-center p-6"><div className="max-w-xl rounded-xl border border-red-700 bg-slate-950 p-6"><h1 className="text-xl font-bold text-red-400 mb-3">FG Tool 表示エラー</h1><p className="text-sm mb-3">表示処理でエラーが発生しました。以下の内容をお知らせください。</p><pre className="whitespace-pre-wrap break-all text-xs text-red-200">{String(this.state.error?.message || this.state.error)}</pre></div></div>;
+      }
+    }
     const root = createRoot(document.getElementById('root'));
-    root.render(<App />);
+    root.render(<DisplayErrorBoundary><App /></DisplayErrorBoundary>);
   </script>
 </body>
 </html>
