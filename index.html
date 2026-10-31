@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool (Standalone)</title>
+  <title>FG Tool</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -230,8 +230,15 @@
 
       const [optimistic, setOptimistic] = useState({});
       const pendingWritesRef = useRef(new Map());
+      const deletedCardsRef = useRef(new Set());
       const optimisticVersionRef = useRef(0);
       const applyLocalWrite = (name, reference, data, mode = 'set') => {
+        // A card removed with its memo/folder must not be recreated by a pending editor flush.
+        if (name === 'cards') {
+          if (mode === 'delete') deletedCardsRef.current.add(reference.id);
+          else if (mode === 'set') deletedCardsRef.current.delete(reference.id);
+          else if (deletedCardsRef.current.has(reference.id)) return reference.id;
+        }
         const key = `${name}/${reference.id}`;
         const version = ++optimisticVersionRef.current;
         setOptimistic(prev => ({ ...prev, [key]: { version, mode, data } }));
@@ -261,6 +268,7 @@
         return reference.id;
       };
       const stageCard = (cardId, blocks) => {
+        if (deletedCardsRef.current.has(cardId)) return;
         const key = `cards/${cardId}`;
         const version = ++optimisticVersionRef.current;
         setOptimistic(prev => ({ ...prev, [key]: { version, mode: 'update', data: { blocks } } }));
@@ -614,6 +622,7 @@
       const [creatingType, setCreatingType] = useState(null);
       const [newItemTitle, setNewItemTitle] = useState('');
       const [isCreating, setIsCreating] = useState(false);
+      const [deleteTarget, setDeleteTarget] = useState(null);
       const [editingId, setEditingId] = useState(null);
       const [editValue, setEditValue] = useState('');
       const [dragItem, setDragItem] = useState(null);
@@ -672,29 +681,35 @@
         }
       };
 
-      const handleDeleteMemo = async (memo) => {
-        if (!window.confirm(`「${memo.title}」と、その中のカードを削除しますか？この操作は取り消せません。`)) return;
-        try {
-          const relatedCards = allCards.filter(card => card.memoId === memo.id);
-          await Promise.all(relatedCards.map(card => deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id))));
-          await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'memos', memo.id));
-          if (selectedMemoId === memo.id) setSelectedMemoId(null);
-        } catch (err) { console.error('Memo deletion failed:', err); alert(`メモを削除できませんでした: ${err.message}`); }
-      };
+      // Show our own confirmation dialog (window.confirm can be blocked in embedded browsers).
+      const handleDeleteMemo = (memo) => setDeleteTarget({ type: 'memo', item: memo });
+      const handleDeleteFolder = (folder) => setDeleteTarget({ type: 'folder', item: folder });
 
-      const handleDeleteFolder = async (folder) => {
-        const childMemos = currentMemos.filter(memo => memo.folderId === folder.id);
-        if (!window.confirm(`フォルダ「${folder.title}」と、配下のメモ${childMemos.length}件・カードをすべて削除しますか？この操作は取り消せません。`)) return;
-        try {
-          const memoIds = new Set(childMemos.map(memo => memo.id));
-          const relatedCards = allCards.filter(card => memoIds.has(card.memoId));
-          await Promise.all([
-            ...relatedCards.map(card => deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id))),
-            ...childMemos.map(memo => deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'memos', memo.id)))
-          ]);
-          await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'folders', folder.id));
-          if (memoIds.has(selectedMemoId)) setSelectedMemoId(null);
-        } catch (err) { console.error('Folder deletion failed:', err); alert(`フォルダを削除できませんでした: ${err.message}`); }
+      const confirmDeletion = () => {
+        if (!deleteTarget) return;
+        const { type, item } = deleteTarget;
+        // Resolve descendants before staging deletes, to avoid losing their IDs.
+        const affectedMemos = type === 'folder'
+          ? currentMemos.filter(memo => memo.folderId === item.id)
+          : [item];
+        const affectedMemoIds = new Set(affectedMemos.map(memo => memo.id));
+        const affectedCards = allCards.filter(card => affectedMemoIds.has(card.memoId));
+        // These updates are immediate for the UI and queued for Firestore in order.
+        // Avoid awaiting network acknowledgements before closing the dialog.
+        affectedCards.forEach(card => applyLocalWrite(
+          'cards', doc(db, 'artifacts', appId, 'users', user.uid, 'cards', card.id), null, 'delete'
+        ));
+        affectedMemos.forEach(memo => applyLocalWrite(
+          'memos', doc(db, 'artifacts', appId, 'users', user.uid, 'memos', memo.id), null, 'delete'
+        ));
+        if (type === 'folder') applyLocalWrite(
+          'folders', doc(db, 'artifacts', appId, 'users', user.uid, 'folders', item.id), null, 'delete'
+        );
+        if (affectedMemoIds.has(selectedMemoId)) setSelectedMemoId(null);
+        if (pendingMemoSelectionRef.current && affectedMemoIds.has(pendingMemoSelectionRef.current)) {
+          pendingMemoSelectionRef.current = null;
+        }
+        setDeleteTarget(null);
       };
 
       const moveCard = async (card, direction) => {
@@ -782,7 +797,7 @@
                         <Folder size={14} className="mr-2 shrink-0" /> 
                         {editingId === folder.id ? <input autoFocus value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={()=>handleRename('folders', folder.id)} onKeyDown={e=>e.key==='Enter'&&handleRename('folders', folder.id)} className="bg-slate-900 border border-cyan-500 rounded px-1 py-0.5 w-full text-white font-normal" /> : <span className="truncate flex-1" onDoubleClick={(e) => { e.stopPropagation(); setEditingId(folder.id); setEditValue(folder.title); }}>{folder.title}</span>}
                      </div>
-                     <div className="flex space-x-1 opacity-0 group-hover/folder:opacity-100 transition-opacity ml-2 shrink-0">
+                     <div className="flex space-x-1 opacity-70 group-hover/folder:opacity-100 transition-opacity ml-2 shrink-0">
                         <button onClick={(e) => { e.stopPropagation(); setEditingId(folder.id); setEditValue(folder.title); }} className="hover:text-cyan-400 p-0.5"><Pencil size={12}/></button>
                         <button onClick={(e) => { e.stopPropagation(); openCreateModal({type:'memo', folderId: folder.id}); }} className="hover:text-cyan-400 p-0.5" title="メモを追加"><Plus size={12}/></button>
                         <button onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder); }} className="hover:text-red-400 p-0.5" title="フォルダを削除"><Trash2 size={12}/></button>
@@ -809,6 +824,23 @@
               </div>
             ) : <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">Select or create a memo</div>}
           </main>
+          <Modal isOpen={!!deleteTarget} onClose={() => setDeleteTarget(null)} title={deleteTarget?.type === 'folder' ? 'フォルダーを削除' : 'メモを削除'}>
+            <div className="space-y-4">
+              <p className="text-sm text-slate-200">
+                「{deleteTarget?.item?.title}」を削除しますか？
+              </p>
+              <p className="text-xs text-red-300 leading-relaxed">
+                {deleteTarget?.type === 'folder'
+                  ? `配下のメモ${currentMemos.filter(m => m.folderId === deleteTarget?.item?.id).length}件と、そのカードも削除します。`
+                  : 'このメモに含まれるカードも削除します。'}
+                この操作は取り消せません。
+              </p>
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button type="button" onClick={() => setDeleteTarget(null)} className="px-4 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-800">キャンセル</button>
+                <button type="button" onClick={confirmDeletion} className="px-4 py-2 rounded-md text-sm font-bold bg-red-600 hover:bg-red-500 text-white">削除する</button>
+              </div>
+            </div>
+          </Modal>
           <Modal isOpen={!!creatingType} onClose={() => setCreatingType(null)} title={creatingType === 'folder' ? "Create Folder" : "Create Memo"}>
             <div className="space-y-4">
               <div>
@@ -834,7 +866,7 @@
                </div>
                <div className="flex items-center ml-2 shrink-0">
                  <button onClick={(e) => { e.stopPropagation(); setEditingId(memo.id); setEditValue(memo.title); }} className="opacity-0 group-hover/memo:opacity-100 hover:text-cyan-400 p-0.5" title="名前を変更"><Pencil size={12}/></button>
-                 <button onClick={(e) => { e.stopPropagation(); onDelete(memo); }} className="opacity-0 group-hover/memo:opacity-100 hover:text-red-400 p-0.5" title="メモを削除"><Trash2 size={12}/></button>
+                 <button onClick={(e) => { e.stopPropagation(); onDelete(memo); }} className="opacity-70 group-hover/memo:opacity-100 hover:text-red-400 p-0.5" title="メモを削除"><Trash2 size={12}/></button>
                </div>
            </div>
        )
