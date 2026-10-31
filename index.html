@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool</title>
+  <title>FG Tool (Standalone)</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -33,7 +33,7 @@
     import { createRoot } from 'react-dom/client';
     import { initializeApp } from 'firebase/app';
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
-    import { initializeFirestore, collection, onSnapshot, doc, writeBatch } from 'firebase/firestore';
+    import { getFirestore, collection, onSnapshot, doc, writeBatch } from 'firebase/firestore';
     import { Book, Shield, Sword, FolderPlus, FilePlus, ChevronRight, ChevronUp, ChevronDown, X, Edit2, Plus, Save, Trash2, GripVertical, Folder, FileText, Pencil, LogOut, Mail, Lock, UserPlus, LogIn } from 'lucide-react';
 
     // --- Firebase Configuration ---
@@ -64,8 +64,7 @@
       } else {
          app = initializeApp(firebaseConfig);
          auth = getAuth(app);
-         // Diagnostic: use long polling when WebChannel streaming stalls behind a proxy.
-         db = initializeFirestore(app, { experimentalForceLongPolling: true });
+         db = getFirestore(app);
       }
     } catch (e) {
       configError = e.message;
