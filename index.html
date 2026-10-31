@@ -73,15 +73,15 @@
       "A.K.I.", "アルジュン", "アレックス", "イングリッド", "エド", "エドモンド本田", "エレナ", "ガイル", "キャミィ", "キンバリー", "C.ヴァイパー", "ケン", "豪鬼", "サガット", "ザンギエフ", "ジェイミー", "JP", "ジュリ", "ダルシム", "春麗", "ディージェイ", "テリー", "ベガ", "ブランカ", "舞", "マノン", "マリーザ", "ヤスミン", "ラシード", "リュウ", "リリー", "ルーク"
     ];
 
-    const CATEGORIES = ['通常技', '特殊技', '必殺技', 'SA', '通常投げ', '共通行動'];
+    const CATEGORIES = ['①通常技', '②特殊技', '③必殺技', '④SA', '⑤通常投げ', '⑥共通行動'];
     const STRENGTHS = ['弱', '中', '強', 'OD', 'その他'];
     const COMBO_STATES = ['通常', 'カウンター', 'パニカン'];
 
     const DEFAULT_MOVES_DATA = {
-      '通常技': ['弱P', '中P', '強P', '弱K', '中K', '強K', '2弱P', '2中P', '2強P', '2弱K', '2中K', '2強K', 'j弱P', 'j中P', 'j強P', 'j弱K', 'j中K', 'j強K'],
-      'SA': ['SA1', 'SA2', 'SA3', 'CA'],
-      '通常投げ': ['前投げ', '後ろ投げ'],
-      '共通行動': ['前ステップ', 'バックステップ', 'インパクト', 'パリィ', 'ジャストパリィ', '生ラッシュ', 'Cラッシュ', '前歩き', '後ろ歩き', '前ジャンプ', '垂直', 'バックジャンプ', '何もしない']
+      '①通常技': ['弱P', '中P', '強P', '弱K', '中K', '強K', '2弱P', '2中P', '2強P', '2弱K', '2中K', '2強K', 'j弱P', 'j中P', 'j強P', 'j弱K', 'j中K', 'j強K'],
+      '④SA': ['SA1', 'SA2', 'SA3', 'CA'],
+      '⑤通常投げ': ['前投げ', '後ろ投げ'],
+      '⑥共通行動': ['前ステップ', 'バックステップ', 'インパクト', 'パリィ', 'ジャストパリィ', '生ラッシュ', 'Cラッシュ', '前歩き', '後ろ歩き', '前ジャンプ', '垂直', 'バックジャンプ', '何もしない']
     };
 
     const STRENGTH_COLORS = {
@@ -97,7 +97,7 @@
       Object.entries(DEFAULT_MOVES_DATA).forEach(([category, names]) => {
         names.forEach(name => {
           let strength = 'その他';
-          if (category === '通常技') {
+          if (category === '①通常技') {
             if (name.includes('弱')) strength = '弱';
             else if (name.includes('中')) strength = '中';
             else if (name.includes('強')) strength = '強';
@@ -371,18 +371,25 @@
           let docRef;
           
           if (isDefaultEdit) {
+            // デフォルト技の初編集時は、新規ドキュメントとして保存しつつ overrideId に元のIDを持たせる
             docRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'moves'));
             moveData.overrideId = moveData.id; 
             delete moveData.isDefault; 
+            delete moveData.id; // 一時IDを削除してFirestoreに自動生成させる
           } else if (isNewCustom) {
             docRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'moves'));
           } else {
             docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'moves', moveData.id);
           }
 
-          await setDoc(docRef, { ...moveData, charId: charName, id: docRef.id });
+          const dataToSave = { ...moveData, charId: charName };
+          if (!dataToSave.id) {
+            dataToSave.id = docRef.id;
+          }
+
+          await setDoc(docRef, dataToSave);
           setEditingMove(null);
-        } catch (err) { console.error(err); }
+        } catch (err) { console.error("Error saving move:", err); }
       };
 
       const handleDeleteCustomMove = async (moveId) => {
