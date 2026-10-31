@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FG Tool</title>
+  <title>FG Tool (Standalone)</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -625,7 +625,7 @@
       const [deleteTarget, setDeleteTarget] = useState(null);
       const [editingId, setEditingId] = useState(null);
       const [editValue, setEditValue] = useState('');
-      const [dragItem, setDragItem] = useState(null);
+      const dragItemRef = useRef(null);
       const [dragOverTarget, setDragOverTarget] = useState(null);
       const pendingMemoSelectionRef = useRef(null);
 
@@ -723,42 +723,76 @@
         } catch (err) { console.error('Card reorder failed:', err); alert(`カードの並べ替えに失敗しました: ${err.message}`); }
       };
 
-      const handleDragStart = (e, type, item) => { e.dataTransfer.effectAllowed = 'move'; setDragItem({ type, ...item }); setTimeout(() => { if (e.target) e.target.style.opacity = '0.5'; }, 0); };
-      const handleDragEnd = (e) => { if (e.target) e.target.style.opacity = '1'; setDragItem(null); setDragOverTarget(null); };
-
-      const handleDrop = async (e, targetType, targetId, targetFolderId = null) => {
-          e.preventDefault(); e.stopPropagation(); setDragOverTarget(null);
-          if (!dragItem) return;
-          const { type: draggedType, id: draggedId, folderId: sourceFolderId } = dragItem;
-          if (draggedId === targetId && draggedType === targetType) return;
-          try {
-            if (draggedType === 'folder' && targetType === 'folder') {
-              const reordered = [...currentFolders];
-              const from = reordered.findIndex(folder => folder.id === draggedId);
-              let to = reordered.findIndex(folder => folder.id === targetId);
-              if (from < 0 || to < 0) return;
-              const [item] = reordered.splice(from, 1);
-              if (to > from) to--;
-              reordered.splice(to, 0, item);
-              await Promise.all(reordered.map((folder, order) => updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'folders', folder.id), { order })));
-            } else if (draggedType === 'memo') {
-              const draggedMemo = currentMemos.find(memo => memo.id === draggedId);
-              if (!draggedMemo) return;
-              const destinationFolderId = targetType === 'folder' ? targetId : (targetType === 'root' ? null : targetFolderId);
-              const destination = currentMemos.filter(memo => memo.folderId === destinationFolderId && memo.id !== draggedId);
-              let insertionIndex = targetType === 'memo' ? destination.findIndex(memo => memo.id === targetId) : destination.length;
-              if (insertionIndex < 0) insertionIndex = destination.length;
-              destination.splice(insertionIndex, 0, draggedMemo);
-              const writes = destination.map((memo, order) => updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'memos', memo.id), { folderId: destinationFolderId, order }));
-              if (sourceFolderId !== destinationFolderId && !destination.some(memo => memo.id === draggedId)) {
-                writes.push(updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'memos', draggedId), { folderId: destinationFolderId, order: destination.length }));
-              }
-              await Promise.all(writes);
-            }
-          } catch (err) {
-            console.error('Drag-and-drop update failed:', err);
-            alert(`並べ替えに失敗しました: ${err.message}`);
-          }
+      // Keep drag payload in a ref: React state updates are asynchronous and
+      // dragend can fire before the drop handler observes a state update.
+      const handleDragStart = (e, type, item) => {
+        const payload = { type, id: item.id, folderId: item.folderId ?? null };
+        dragItemRef.current = payload;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('application/x-fg-sidebar', JSON.stringify(payload));
+        e.dataTransfer.setData('text/plain', item.id);
+      };
+      const handleDragEnd = () => {
+        dragItemRef.current = null;
+        setDragOverTarget(null);
+      };
+      const handleDragOver = (e, targetKey) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        setDragOverTarget(previous => previous === targetKey ? previous : targetKey);
+      };
+      const handleDrop = (e, targetType, targetId, targetFolderId = null) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOverTarget(null);
+        let dragged = dragItemRef.current;
+        if (!dragged) {
+          try { dragged = JSON.parse(e.dataTransfer.getData('application/x-fg-sidebar')); }
+          catch { return; }
+        }
+        dragItemRef.current = null;
+        if (!dragged || (dragged.type === targetType && dragged.id === targetId)) return;
+        const updateOrder = (collectionName, item, changes) => {
+          const reference = doc(db, 'artifacts', appId, 'users', user.uid, collectionName, item.id);
+          applyLocalWrite(collectionName, reference, changes, 'update');
+        };
+        if (dragged.type === 'folder' && targetType === 'folder') {
+          const sorted = [...currentFolders];
+          const from = sorted.findIndex(folder => folder.id === dragged.id);
+          const to = sorted.findIndex(folder => folder.id === targetId);
+          if (from < 0 || to < 0) return;
+          // Insert at the original target index (no extra decrement).
+          const [moving] = sorted.splice(from, 1);
+          sorted.splice(to, 0, moving);
+          sorted.forEach((folder, order) => {
+            if (folder.order !== order) updateOrder('folders', folder, { order });
+          });
+          return;
+        }
+        if (dragged.type !== 'memo') return;
+        const moving = currentMemos.find(memo => memo.id === dragged.id);
+        if (!moving) return;
+        const destinationId = targetType === 'root' ? null :
+          targetType === 'folder' ? targetId :
+          targetType === 'memo' ? (targetFolderId ?? null) : undefined;
+        if (destinationId === undefined) return;
+        const sourceId = moving.folderId ?? null;
+        const destination = currentMemos.filter(memo => (memo.folderId ?? null) === destinationId && memo.id !== moving.id);
+        let insertAt = targetType === 'memo' ? destination.findIndex(memo => memo.id === targetId) : destination.length;
+        if (insertAt < 0) insertAt = destination.length;
+        destination.splice(insertAt, 0, moving);
+        // Re-index both old and new folders so future drops have stable positions.
+        if (sourceId !== destinationId) {
+          const source = currentMemos.filter(memo => (memo.folderId ?? null) === sourceId && memo.id !== moving.id);
+          source.forEach((memo, order) => {
+            if (memo.order !== order) updateOrder('memos', memo, { order });
+          });
+        }
+        destination.forEach((memo, order) => {
+          if (memo.order !== order || (memo.folderId ?? null) !== destinationId)
+            updateOrder('memos', memo, { folderId: destinationId, order });
+        });
       };
 
       const currentCards = useMemo(() => allCards.filter(c => c.memoId === selectedMemoId).sort((a, b) => (a.order || 0) - (b.order || 0)), [allCards, selectedMemoId]);
@@ -789,9 +823,9 @@
                   <button onClick={() => openCreateModal({type: 'memo', folderId: null})} className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors" title="New Root Memo"><FilePlus size={16} /></button>
               </div>
             </div>
-            <div className={`flex-1 overflow-y-auto p-2 space-y-2 pb-20 ${dragOverTarget === 'root' ? 'bg-slate-800/20' : ''}`} onDragOver={(e) => { e.preventDefault(); setDragOverTarget('root'); }} onDrop={(e) => handleDrop(e, 'root', null, null)}>
+            <div className={`flex-1 overflow-y-auto p-2 space-y-2 pb-20 ${dragOverTarget === 'root' ? 'bg-slate-800/20' : ''}`} onDragOver={(e) => handleDragOver(e, 'root')} onDrop={(e) => handleDrop(e, 'root', null, null)}>
               {currentFolders.map(folder => (
-                <div key={folder.id} className="mb-2" onDragOver={(e) => { e.preventDefault(); setDragOverTarget(folder.id); e.stopPropagation(); }} onDrop={(e) => handleDrop(e, 'folder', folder.id, folder.id)}>
+                <div key={folder.id} className="mb-2" onDragOver={(e) => handleDragOver(e, folder.id)} onDrop={(e) => handleDrop(e, 'folder', folder.id, folder.id)}>
                   <div draggable onDragStart={(e) => handleDragStart(e, 'folder', folder)} onDragEnd={handleDragEnd} className={`flex items-center justify-between text-xs font-bold text-slate-400 uppercase tracking-wider px-2 py-1.5 rounded cursor-grab active:cursor-grabbing hover:bg-slate-800/50 group/folder ${dragOverTarget === folder.id ? 'bg-cyan-900/30 border border-cyan-700 text-cyan-300' : 'border border-transparent'}`}>
                      <div className="flex items-center flex-1 overflow-hidden">
                         <Folder size={14} className="mr-2 shrink-0" /> 
@@ -805,13 +839,13 @@
                   </div>
                   <div className="pl-3 mt-1 space-y-0.5 min-h-[4px]">
                       {currentMemos.filter(m => m.folderId === folder.id).map(memo => (
-                         <MemoSidebarItem key={memo.id} memo={memo} selected={selectedMemoId === memo.id} onSelect={() => setSelectedMemoId(memo.id)} editingId={editingId} setEditingId={setEditingId} editValue={editValue} setEditValue={setEditValue} handleRename={handleRename} handleDragStart={handleDragStart} handleDragEnd={handleDragEnd} handleDrop={handleDrop} dragOverTarget={dragOverTarget} setDragOverTarget={setDragOverTarget} onDelete={handleDeleteMemo} />
+                         <MemoSidebarItem key={memo.id} memo={memo} selected={selectedMemoId === memo.id} onSelect={() => setSelectedMemoId(memo.id)} editingId={editingId} setEditingId={setEditingId} editValue={editValue} setEditValue={setEditValue} handleRename={handleRename} handleDragStart={handleDragStart} handleDragEnd={handleDragEnd} handleDragOver={handleDragOver} handleDrop={handleDrop} dragOverTarget={dragOverTarget} setDragOverTarget={setDragOverTarget} onDelete={handleDeleteMemo} />
                       ))}
                   </div>
                 </div>
               ))}
               {currentMemos.filter(m => !m.folderId).map(memo => (
-                 <MemoSidebarItem key={memo.id} memo={memo} selected={selectedMemoId === memo.id} onSelect={() => setSelectedMemoId(memo.id)} editingId={editingId} setEditingId={setEditingId} editValue={editValue} setEditValue={setEditValue} handleRename={handleRename} handleDragStart={handleDragStart} handleDragEnd={handleDragEnd} handleDrop={handleDrop} dragOverTarget={dragOverTarget} setDragOverTarget={setDragOverTarget} onDelete={handleDeleteMemo} />
+                 <MemoSidebarItem key={memo.id} memo={memo} selected={selectedMemoId === memo.id} onSelect={() => setSelectedMemoId(memo.id)} editingId={editingId} setEditingId={setEditingId} editValue={editValue} setEditValue={setEditValue} handleRename={handleRename} handleDragStart={handleDragStart} handleDragEnd={handleDragEnd} handleDragOver={handleDragOver} handleDrop={handleDrop} dragOverTarget={dragOverTarget} setDragOverTarget={setDragOverTarget} onDelete={handleDeleteMemo} />
               ))}
               {currentFolders.length === 0 && currentMemos.length === 0 && <div className="text-center p-4 text-xs text-slate-500 italic mt-10">No items yet.</div>}
             </div>
@@ -857,9 +891,9 @@
       );
     }
 
-    function MemoSidebarItem({ memo, selected, onSelect, editingId, setEditingId, editValue, setEditValue, handleRename, handleDragStart, handleDragEnd, handleDrop, dragOverTarget, setDragOverTarget, onDelete }) {
+    function MemoSidebarItem({ memo, selected, onSelect, editingId, setEditingId, editValue, setEditValue, handleRename, handleDragStart, handleDragEnd, handleDragOver, handleDrop, dragOverTarget, setDragOverTarget, onDelete }) {
        return (
-           <div draggable onDragStart={(e) => handleDragStart(e, 'memo', memo)} onDragEnd={handleDragEnd} onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverTarget(memo.id); }} onDrop={(e) => handleDrop(e, 'memo', memo.id, memo.folderId)} className={`w-full flex items-center justify-between text-left px-2 py-1.5 rounded-md text-sm transition-all cursor-grab active:cursor-grabbing group/memo border-l-2 ${selected ? 'bg-slate-800 text-white border-cyan-500 shadow-sm' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 border-transparent'} ${dragOverTarget === memo.id ? 'border-t-2 border-t-cyan-400 bg-slate-800/80' : ''}`}>
+           <div draggable onDragStart={(e) => handleDragStart(e, 'memo', memo)} onDragEnd={handleDragEnd} onDragOver={(e) => handleDragOver(e, memo.id)} onDrop={(e) => handleDrop(e, 'memo', memo.id, memo.folderId)} className={`w-full flex items-center justify-between text-left px-2 py-1.5 rounded-md text-sm transition-all cursor-grab active:cursor-grabbing group/memo border-l-2 ${selected ? 'bg-slate-800 text-white border-cyan-500 shadow-sm' : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 border-transparent'} ${dragOverTarget === memo.id ? 'border-t-2 border-t-cyan-400 bg-slate-800/80' : ''}`}>
                <div className="flex items-center flex-1 overflow-hidden" onClick={onSelect}>
                    <FileText size={14} className="mr-2 opacity-50 shrink-0" />
                    {editingId === memo.id ? <input autoFocus value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={()=>handleRename('memos', memo.id)} onKeyDown={e=>e.key==='Enter'&&handleRename('memos', memo.id)} className="bg-slate-900 border border-cyan-500 rounded px-1 py-0.5 w-full text-white font-normal" /> : <span className="truncate flex-1" onDoubleClick={(e) => { e.stopPropagation(); setEditingId(memo.id); setEditValue(memo.title); }}>{memo.title}</span>}
