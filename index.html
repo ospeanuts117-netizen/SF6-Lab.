@@ -26,6 +26,14 @@
 
   <!-- Babel for running React directly in browser -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    /* Keep the character list scrollbar inside its column, without a visible track. */
+    .character-scroll { scrollbar-width: thin; scrollbar-color: rgba(148,163,184,.38) transparent; scrollbar-gutter: stable; }
+    .character-scroll::-webkit-scrollbar { width: 6px; }
+    .character-scroll::-webkit-scrollbar-track { background: transparent; }
+    .character-scroll::-webkit-scrollbar-thumb { background: rgba(148,163,184,.38); border-radius: 999px; }
+    .character-scroll::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,.65); }
+  </style>
 </head>
 <body class="bg-slate-900 text-slate-200">
   <div id="root"><div style="padding:32px;color:#94a3b8;font-family:sans-serif">FG Tool を読み込み中…<div style="font-size:12px;margin-top:8px">このまま表示されない場合は、インターネット接続とブラウザのコンソールを確認してください。</div></div></div>
@@ -493,11 +501,11 @@
           </header>
 
           <div className="flex flex-1 overflow-hidden">
-            <aside className="w-24 md:w-48 flex-none bg-slate-950 border-r border-slate-800 flex flex-col overflow-y-auto">
+            <aside className="w-24 md:w-48 flex-none min-h-0 bg-slate-950 border-r border-slate-800 flex flex-col overflow-hidden">
               <div className="p-3 border-b border-slate-800 sticky top-0 bg-slate-950/90 backdrop-blur z-10 hidden md:block">
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Characters</span>
               </div>
-              <div className="flex-1 p-2 space-y-1">
+              <div className="character-scroll flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 pr-1 space-y-1">
                 {CHARACTERS.map(char => (
                   <button
                     key={char}
