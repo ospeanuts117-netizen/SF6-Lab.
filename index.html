@@ -362,14 +362,16 @@
       const [activeCategory, setActiveCategory] = useState(CATEGORIES[0]);
       const [editingMove, setEditingMove] = useState(null);
 
-      const displayedMoves = useMemo(() => moves.filter(m => m.category === activeCategory), [moves, activeCategory]);
+      const displayedMoves = useMemo(() => {
+        return moves.filter(m => m.category === activeCategory);
+      }, [moves, activeCategory]);
 
       const handleSaveMove = async (moveData) => {
         try {
           const isNewCustom = !moveData.id;
           const isDefaultEdit = moveData.isDefault; 
-          let docRef;
           
+          let docRef;
           if (isDefaultEdit) {
             docRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'moves'));
             moveData.overrideId = moveData.id; 
@@ -381,14 +383,77 @@
             docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'moves', moveData.id);
           }
 
-          const dataToSave = { ...moveData, charId: charName, category: activeCategory };
-          if (!dataToSave.id) {
-            dataToSave.id = docRef.id;
-          }
-
-          await setDoc(docRef, dataToSave);
+          await setDoc(docRef, {
+            ...moveData,
+            charId: charName,
+            category: activeCategory,
+            id: docRef.id
+          });
           setEditingMove(null);
-        } catch (err) { console.error("Error saving move:", err); }
+        } catch (err) {
+          console.error("Error saving move:", err);
+        }
       };
 
       const handleDeleteCustomMove = async (moveId) => {
+        if (!moveId) return;
+        try {
+          await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'moves', moveId));
+          setEditingMove(null);
+        } catch (err) {
+          console.error("Error deleting move:", err);
+        }
+      };
+
+      return (
+        <div className="flex flex-col h-full">
+          {/* Category Tabs */}
+          <div className="flex overflow-x-auto bg-slate-950 border-b border-slate-800 shrink-0 p-2 space-x-1">
+            {CATEGORIES.map(cat => (
+              <button
+                key={cat}
+                onClick={() => setActiveCategory(cat)}
+                className={`px-4 py-1.5 rounded-full text-sm whitespace-nowrap transition-colors ${
+                  activeCategory === cat ? 'bg-cyan-900/50 text-cyan-300 border border-cyan-800/50' : 'text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
+          {/* Main Content (Moves Grid) */}
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-900/50">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+              {displayedMoves.map((move) => (
+                <MoveTile 
+                  key={move.id || Math.random()} 
+                  move={move} 
+                  onClick={() => setEditingMove(move)} 
+                />
+              ))}
+              
+              {/* Add New Move Button */}
+              <button
+                onClick={() => setEditingMove({ category: activeCategory, name: '', command: '', startup: '', block: '', hit: '', strength: 'その他' })}
+                className="flex flex-col items-center justify-center min-h-[100px] rounded-xl border-2 border-dashed border-slate-700 hover:border-cyan-500 hover:bg-slate-800/50 transition-all text-slate-500 hover:text-cyan-400 cursor-pointer"
+              >
+                <Plus size={24} className="mb-1" />
+                <span className="text-sm font-medium">Add Move</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Move Editor Modal */}
+          <MoveEditorModal 
+            move={editingMove} 
+            isOpen={!!editingMove} 
+            onClose={() => setEditingMove(null)} 
+            onSave={handleSaveMove}
+            onDelete={handleDeleteCustomMove}
+          />
+        </div>
+      );
+    }
+
+    function MoveTile({ move, onClick, minimal = false }) {
