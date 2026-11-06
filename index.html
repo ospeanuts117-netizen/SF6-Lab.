@@ -130,7 +130,7 @@
           }
           defaults.push({
             id: `def_${category}_${name}`,
-            name, category, command: '', startup: '', block: '', hit: '', strength, isDefault: true
+            name, moveName: '', category, command: '', startup: '', block: '', hit: '', strength, isDefault: true
           });
         });
       });
@@ -138,7 +138,8 @@
     };
     const ALL_DEFAULT_MOVES = generateDefaultMoves();
     const IMPORT_STORAGE_KEY = 'fg-tool-default-moves-v1';
-    const DEFAULT_COLUMNS = ['charId', 'category', 'moveId', 'name', 'command', 'strength', 'startup', 'hit', 'block'];
+    const DEFAULT_COLUMNS = ['charId', 'category', 'moveId', 'name', 'command', 'strength', 'startup', 'hit', 'block', 'moveName'];
+    const MOVE_NAME_CATEGORIES = ['通常技', '特殊技', 'SA', '通常投げ'];
 
     const readStoredDefaultRows = () => {
       try {
@@ -155,7 +156,7 @@
       if (!source) throw new Error('技データは行の配列で指定してください。');
       const seen = new Set();
       return source.map((row, index) => {
-        const item = Object.fromEntries(DEFAULT_COLUMNS.map(key => [key, String(row?.[key] ?? '').trim()]));
+        const item = Object.fromEntries(DEFAULT_COLUMNS.map(key => [key, String(key === 'moveName' ? (row?.moveName ?? row?.['技名'] ?? '') : (row?.[key] ?? '')).trim()]));
         if (!item.name) return null; // テンプレートの未入力行は無視
         if (!CHARACTERS.includes(item.charId)) throw new Error(`${index + 2}行目: 不明なキャラクター ${item.charId}`);
         if (!CATEGORIES.includes(item.category)) throw new Error(`${index + 2}行目: 不明なカテゴリ ${item.category}`);
@@ -194,6 +195,7 @@
         charId: row.charId,
         category: row.category,
         name: row.name,
+        moveName: row.moveName || '',
         command: row.command,
         strength: row.strength || 'その他',
         startup: row.startup,
@@ -727,7 +729,7 @@
               
               {/* Add New Move Button */}
               <button
-                onClick={() => setEditingMove({ category: activeCategory, name: '', command: '', startup: '', block: '', hit: '', strength: 'その他' })}
+                onClick={() => setEditingMove({ category: activeCategory, name: '', moveName: '', command: '', startup: '', block: '', hit: '', strength: 'その他' })}
                 className="flex flex-col items-center justify-center min-h-[100px] rounded-xl border-2 border-dashed border-slate-700 hover:border-cyan-500 hover:bg-slate-800/50 transition-all text-slate-500 hover:text-cyan-400 cursor-pointer"
               >
                 <Plus size={24} className="mb-1" />
@@ -765,6 +767,11 @@
             <span className="truncate" title={move.name}>{move.name || 'Unnamed'}</span>
             {move.command && <span className="text-[10px] opacity-70 ml-1 font-mono bg-black/10 px-1 rounded whitespace-nowrap">{move.command}</span>}
           </div>
+          {MOVE_NAME_CATEGORIES.includes(move.category) && move.moveName && (
+            <div className="px-2 pt-1.5 text-[11px] leading-snug font-medium opacity-85 break-words" title={move.moveName}>
+              {move.moveName}
+            </div>
+          )}
           <div className="flex-1 p-2 grid grid-cols-3 gap-x-2 text-xs items-center">
             <div className="flex flex-col min-w-0"><span className="opacity-60 text-[10px] leading-tight">発生</span><span className="font-semibold whitespace-nowrap">{move.startup || '-'}</span></div>
             <div className="flex flex-col min-w-0"><span className="opacity-60 text-[10px] leading-tight">ガード</span><span className="font-semibold whitespace-nowrap">{move.block || '-'}</span></div>
@@ -841,6 +848,15 @@
                   className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500" placeholder="コマンド" />
               </div>
             </div>
+
+            {MOVE_NAME_CATEGORIES.includes(formData.category || move.category) && (
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">技名（別名・正式名称）</label>
+                <input type="text" name="moveName" value={formData.moveName || ''} onChange={handleChange}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                  placeholder="カードに追加表示する技名（任意）" />
+              </div>
+            )}
 
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-2">Strength</label>
