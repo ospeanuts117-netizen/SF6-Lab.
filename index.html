@@ -27,12 +27,15 @@
   <!-- Babel for running React directly in browser -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
-    /* Keep the character list scrollbar inside its column, without a visible track. */
-    .character-scroll { scrollbar-width: thin; scrollbar-color: rgba(148,163,184,.38) transparent; scrollbar-gutter: stable; }
-    .character-scroll::-webkit-scrollbar { width: 6px; }
-    .character-scroll::-webkit-scrollbar-track { background: transparent; }
-    .character-scroll::-webkit-scrollbar-thumb { background: rgba(148,163,184,.38); border-radius: 999px; }
-    .character-scroll::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,.65); }
+    /* サイト内すべてのスクロール領域で透明トラック・細い半透明つまみを使用 */
+    html, body, * { scrollbar-width: thin; scrollbar-color: rgba(148,163,184,.38) transparent; }
+    *::-webkit-scrollbar { width: 6px; height: 6px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-thumb { background: rgba(148,163,184,.38); border-radius: 999px; }
+    *::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,.65); }
+    .character-scroll { scrollbar-gutter: stable; }
+    .dragging-block { opacity: .45; }
+    .drop-block { outline: 2px solid #22d3ee; outline-offset: 2px; }
   </style>
 </head>
 <body class="bg-slate-900 text-slate-200">
@@ -103,13 +106,6 @@
     const STRENGTHS = ['弱', '中', '強', 'OD', 'その他'];
     const COMBO_STATES = ['ノーマル', 'カウンター', 'パニカン'];
 
-    const DEFAULT_MOVES_DATA = {
-      '通常技': ['弱P', '中P', '強P', '弱K', '中K', '強K', '2弱P', '2中P', '2強P', '2弱K', '2中K', '2強K', 'j弱P', 'j中P', 'j強P', 'j弱K', 'j中K', 'j強K'],
-      'SA': ['SA1', 'SA2', 'SA3', 'CA'],
-      '通常投げ': ['前投げ', '後ろ投げ'],
-      '共通行動': ['前ステップ', 'バックステップ', 'インパクト', 'パリィ', 'ジャストパリィ', '生ラッシュ', 'Cラッシュ', '前歩き', '後ろ歩き', '前ジャンプ', '垂直', 'バックジャンプ', '何もしない']
-    };
-
     const STRENGTH_COLORS = {
       '弱': 'bg-cyan-200 text-cyan-900 border-cyan-300',
       '中': 'bg-yellow-200 text-yellow-900 border-yellow-300',
@@ -118,25 +114,7 @@
       'その他': 'bg-white text-gray-900 border-gray-300'
     };
 
-    const generateDefaultMoves = () => {
-      let defaults = [];
-      Object.entries(DEFAULT_MOVES_DATA).forEach(([category, names]) => {
-        names.forEach(name => {
-          let strength = 'その他';
-          if (category === '通常技') {
-            if (name.includes('弱')) strength = '弱';
-            else if (name.includes('中')) strength = '中';
-            else if (name.includes('強')) strength = '強';
-          }
-          defaults.push({
-            id: `def_${category}_${name}`,
-            name, moveName: '', category, command: '', startup: '', block: '', hit: '', strength, isDefault: true
-          });
-        });
-      });
-      return defaults;
-    };
-    const ALL_DEFAULT_MOVES = generateDefaultMoves();
+    // デフォルト技は moves/キャラクター名.json だけから読み込みます。
     const IMPORT_STORAGE_KEY = 'fg-tool-default-moves-v1';
     const DEFAULT_COLUMNS = ['charId', 'category', 'moveId', 'name', 'command', 'strength', 'startup', 'hit', 'block', 'moveName'];
     const MOVE_NAME_CATEGORIES = ['通常技', '特殊技', 'SA', '通常投げ'];
@@ -327,60 +305,129 @@
     function MainLayout({ db, user, appId, auth }) {
       const [activeTab, setActiveTab] = useState('data');
       const [notesTab, setNotesTab] = useState('offense');
-      const [selectedChar, setSelectedChar] = useState(CHARACTERS[0]);
+      const [selectedChar, setSelectedChar] = useState(null);
+      const CHARACTER_ORDER_KEY = 'sf6-lab-character-order-v1';
+      const readCharacterOrder = () => {
+        try {
+          const value = JSON.parse(localStorage.getItem(CHARACTER_ORDER_KEY) || '[]');
+          return Array.isArray(value) ? [...new Set(value.filter(x => CHARACTERS.includes(x)))] : [];
+        } catch { return []; }
+      };
+      const [characterOrder, setCharacterOrder] = useState(readCharacterOrder);
       const [pinnedCharacters, setPinnedCharacters] = useState(readPinnedCharacters);
       const pinnedSet = useMemo(() => new Set(pinnedCharacters), [pinnedCharacters]);
-      const unpinnedCharacters = useMemo(() => CHARACTERS.filter(char => !pinnedSet.has(char)), [pinnedSet]);
+      const characterDragRef = useRef(null);
+      const [characterDragOver, setCharacterDragOver] = useState(null);
+      const [discoveredCharacters, setDiscoveredCharacters] = useState([]);
+      const [characterLoading, setCharacterLoading] = useState(true);
+      const [characterError, setCharacterError] = useState('');
+      const availableSet = useMemo(() => new Set(discoveredCharacters), [discoveredCharacters]);
+      const sortedCharacters = useMemo(() => {
+        const order = [...characterOrder, ...CHARACTERS.filter(c => !characterOrder.includes(c))];
+        return order.filter(c => availableSet.has(c));
+      }, [characterOrder, availableSet]);
+      const visiblePinned = sortedCharacters.filter(c => pinnedSet.has(c));
+      const unpinnedCharacters = sortedCharacters.filter(c => !pinnedSet.has(c));
       useEffect(() => {
         try { localStorage.setItem(PIN_STORAGE_KEY, JSON.stringify(pinnedCharacters)); }
         catch (error) { console.warn('Could not save character pins:', error); }
       }, [pinnedCharacters]);
-      const toggleCharacterPin = (character) => {
-        setPinnedCharacters(current => current.includes(character)
-          ? current.filter(name => name !== character)
-          : [...current, character]);
+      useEffect(() => {
+        try { localStorage.setItem(CHARACTER_ORDER_KEY, JSON.stringify(characterOrder)); }
+        catch (error) { console.warn('Could not save character order:', error); }
+      }, [characterOrder]);
+      useEffect(() => {
+        if (characterLoading) return;
+        setPinnedCharacters(old => old.filter(c => availableSet.has(c)));
+      }, [characterLoading, discoveredCharacters]);
+      useEffect(() => {
+        if (!discoveredCharacters.length) {
+          setSelectedChar(null);
+          return;
+        }
+        setSelectedChar(previous => (previous && availableSet.has(previous)) ? previous : sortedCharacters[0]);
+      }, [discoveredCharacters, sortedCharacters]);
+      const toggleCharacterPin = (character) => setPinnedCharacters(current => current.includes(character)
+        ? current.filter(name => name !== character)
+        : [...current, character]);
+      const startCharacterDrag = (event, char) => {
+        characterDragRef.current = char;
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', char);
+        event.dataTransfer.setData('application/x-sf6-character', char);
+      };
+      const dropCharacter = (event, target) => {
+        event.preventDefault();
+        const source = characterDragRef.current || event.dataTransfer.getData('application/x-sf6-character');
+        characterDragRef.current = null;
+        setCharacterDragOver(null);
+        if (!source || source === target || !availableSet.has(source) || !availableSet.has(target)) return;
+        // A drop into the pinned section also pins the moved character.
+        // A drop into the ordinary section unpins it.
+        const nextPinned = visiblePinned.filter(c => c !== source);
+        const nextUnpinned = unpinnedCharacters.filter(c => c !== source);
+        const targetPinned = pinnedSet.has(target);
+        const destination = targetPinned ? nextPinned : nextUnpinned;
+        const position = destination.indexOf(target);
+        if (position < 0) return;
+        destination.splice(position, 0, source);
+        setPinnedCharacters(nextPinned);
+        setCharacterOrder([...nextPinned, ...nextUnpinned]);
       };
       const renderCharacterButton = (char) => (
-        <div key={char} className={`group flex w-full items-center rounded-md border transition-colors ${selectedChar === char ? 'bg-cyan-900 border-cyan-700' : 'border-transparent hover:bg-slate-800'}`}>
+        <div key={char} draggable
+          onDragStart={e => startCharacterDrag(e, char)}
+          onDragEnd={() => { characterDragRef.current = null; setCharacterDragOver(null); }}
+          onDragOver={e => { e.preventDefault(); e.stopPropagation(); setCharacterDragOver(char); }}
+          onDrop={e => { e.stopPropagation(); dropCharacter(e, char); }}
+          className={`group flex w-full items-center rounded-md border transition-colors cursor-grab active:cursor-grabbing ${characterDragOver === char ? 'border-cyan-400 bg-slate-800' : selectedChar === char ? 'bg-cyan-900 border-cyan-700' : 'border-transparent hover:bg-slate-800'}`}>
+          <GripVertical size={12} className="ml-1 shrink-0 text-slate-600" />
           <button type="button" onClick={() => { if (selectedChar !== char) setSelectedChar(char); }}
-            className={`min-w-0 flex-1 text-left px-2 md:px-3 py-2 text-xs md:text-sm font-medium ${selectedChar === char ? 'text-cyan-400' : 'text-slate-400 hover:text-slate-200'}`}>
+            className={`min-w-0 flex-1 text-left px-1 md:px-2 py-2 text-xs md:text-sm font-medium ${selectedChar === char ? 'text-cyan-400' : 'text-slate-400 hover:text-slate-200'}`}>
             <span className="truncate block">{char}</span>
           </button>
           <button type="button" onClick={() => toggleCharacterPin(char)}
             aria-label={`${char}を${pinnedSet.has(char) ? 'ピン留め解除' : 'ピン留め'}`}
             aria-pressed={pinnedSet.has(char)}
             title={pinnedSet.has(char) ? 'ピン留め解除' : '上部にピン留め'}
-            className={`shrink-0 p-1.5 mr-0.5 rounded transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 ${pinnedSet.has(char) ? 'text-cyan-400 hover:bg-slate-700' : 'text-slate-600 hover:text-cyan-400 hover:bg-slate-700'}`}>
+            className={`shrink-0 p-1.5 mr-0.5 rounded transition-colors ${pinnedSet.has(char) ? 'text-cyan-400 hover:bg-slate-700' : 'text-slate-600 hover:text-cyan-400 hover:bg-slate-700'}`}>
             <Pin size={13} fill={pinnedSet.has(char) ? 'currentColor' : 'none'} />
           </button>
         </div>
       );
-      
+
       const [allMoves, setAllMoves] = useState([]);
       // Repository layout: index.html and moves/キャラクター名.json share a Pages root.
       // Local Excel imports, when present, take precedence for their categories.
       const [importedRows, setImportedRows] = useState(readStoredDefaultRows);
       const [publishedByChar, setPublishedByChar] = useState({});
+      // GitHub Pages does not provide directory listing. Probe known Japanese names;
+      // only valid, successfully fetched moves/キャラクター名.json files appear.
       useEffect(() => {
         let cancelled = false;
-        const character = selectedChar;
-        if (publishedByChar[character]) return;
-        const url = new URL(`./moves/${encodeURIComponent(character)}.json`, document.baseURI);
-        fetch(url.href, { cache: 'no-cache' })
-          .then(async response => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}: ${character}.json`);
-            const data = await response.json();
-            return normalizeCharacterJson(data, character);
-          })
-          .then(rows => {
-            if (!cancelled) setPublishedByChar(prev => ({ ...prev, [character]: { rows, error: null } }));
-          })
-          .catch(error => {
-            console.warn('Published move data unavailable:', url.href, error);
-            if (!cancelled) setPublishedByChar(prev => ({ ...prev, [character]: { rows: [], error: error.message } }));
-          });
+        const discover = async () => {
+          const found = await Promise.all(CHARACTERS.map(async character => {
+            try {
+              const url = new URL(`./moves/${encodeURIComponent(character)}.json`, document.baseURI);
+              const response = await fetch(url.href, { cache: 'no-cache' });
+              if (!response.ok) return null;
+              const rows = normalizeCharacterJson(await response.json(), character);
+              return { character, rows };
+            } catch (error) {
+              console.warn(`Could not load ${character}.json:`, error);
+              return null;
+            }
+          }));
+          if (cancelled) return;
+          const valid = found.filter(Boolean);
+          setPublishedByChar(Object.fromEntries(valid.map(item => [item.character, { rows: item.rows, error: null }])));
+          setDiscoveredCharacters(valid.map(item => item.character));
+          setCharacterError(valid.length ? '' : 'moves/ フォルダーに有効な「キャラクター名.json」がありません。GitHub Pagesでの配置を確認してください。');
+          setCharacterLoading(false);
+        };
+        void discover();
         return () => { cancelled = true; };
-      }, [selectedChar, publishedByChar[selectedChar] === undefined]);
+      }, []);
       const handleImportDefaultRows = (rows) => {
         const parsed = normalizeDefaultRows(rows);
         localStorage.setItem(IMPORT_STORAGE_KEY, JSON.stringify(parsed));
@@ -496,16 +543,14 @@
         return () => subscriptions.forEach(unsubscribe => unsubscribe());
       }, [db, user.uid, appId]);
 
+      const publishedDefaultsForChar = useMemo(() => importedDefaultMoves(publishedByChar[selectedChar]?.rows || []), [publishedByChar, selectedChar]);
       const currentMoves = useMemo(() => {
         const customMovesForChar = visibleMoves.filter(m => m.charId === selectedChar);
         const merged = [];
         const publishedForChar = importedDefaultMoves(publishedByChar[selectedChar]?.rows || []);
         const localForChar = importedRows ? importedDefaultMoves(importedRows.filter(r => r.charId === selectedChar)) : [];
         const localCategories = new Set(localForChar.map(m => m.category));
-        const publishedCategories = new Set(publishedForChar.map(m => m.category));
-        const overriddenCategories = new Set([...localCategories, ...publishedCategories]);
         const activeDefaults = [
-          ...ALL_DEFAULT_MOVES.filter(def => !overriddenCategories.has(def.category)),
           ...publishedForChar.filter(def => !localCategories.has(def.category)),
           ...localForChar
         ];
@@ -518,6 +563,8 @@
         return [...merged, ...customOnly];
       }, [visibleMoves, selectedChar, importedRows, publishedByChar]);
 
+      if (characterLoading) return <div className="h-screen bg-slate-900 text-cyan-400 flex items-center justify-center">キャラクターJSONを読み込み中…</div>;
+      if (characterError) return <div className="h-screen bg-slate-900 text-amber-300 p-8 flex items-center justify-center text-center">{characterError}</div>;
       return (
         <div className="h-screen flex flex-col bg-slate-900 text-slate-200 font-sans overflow-hidden">
           <header className="flex-none h-14 bg-slate-950 border-b border-slate-800 flex items-center justify-between px-4 shrink-0">
@@ -542,13 +589,13 @@
               <div className="h-11 px-3 border-b border-slate-800 bg-slate-950/90 backdrop-blur z-10 hidden md:flex items-center">
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Characters</span>
               </div>
-              {pinnedCharacters.length > 0 && (
+              {visiblePinned.length > 0 && (
                 <div className="shrink-0 border-b border-slate-800 bg-slate-950/90">
                   <div className="flex items-center gap-1 px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-cyan-400">
                     <Pin size={11} /> <span className="hidden md:inline">Pinned</span>
                   </div>
                   <div className="character-scroll max-h-[38vh] overflow-y-auto overflow-x-hidden px-2 pb-2 pr-1 space-y-1">
-                    {pinnedCharacters.map(renderCharacterButton)}
+                    {visiblePinned.map(renderCharacterButton)}
                   </div>
                 </div>
               )}
@@ -569,7 +616,7 @@
                   memos={visibleMemos.filter(m => m.charId === selectedChar && m.tab === notesTab)}
                   allFolders={visibleFolders} allCards={visibleCards} moves={currentMoves} stageCard={stageCard} db={db} user={user} appId={appId} />
               </div>
-              {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} importedRows={importedRows} publishedInfo={publishedByChar[selectedChar]} onImportDefaults={handleImportDefaultRows} applyLocalWrite={applyLocalWrite} db={db} user={user} appId={appId} />}
+              {activeTab === 'data' && <DataView charName={selectedChar} moves={currentMoves} importedRows={importedRows} publishedInfo={publishedByChar[selectedChar]} publishedDefaults={publishedDefaultsForChar} onImportDefaults={handleImportDefaultRows} applyLocalWrite={applyLocalWrite} db={db} user={user} appId={appId} />}
             </main>
           </div>
         </div>
@@ -608,7 +655,7 @@
     }
 
     // --- Data Tab ---
-    function DataView({ charName, moves, db, user, appId, applyLocalWrite, importedRows, publishedInfo, onImportDefaults }) {
+    function DataView({ charName, moves, db, user, appId, applyLocalWrite, importedRows, publishedInfo, publishedDefaults, onImportDefaults }) {
       const [activeCategory, setActiveCategory] = useState(CATEGORIES[0]);
       const [editingMove, setEditingMove] = useState(null);
       const importInputRef = useRef(null);
@@ -744,6 +791,7 @@
             isOpen={!!editingMove} 
             onClose={() => setEditingMove(null)} 
             onSave={handleSaveMove}
+            originalMove={editingMove && publishedDefaults.find(def => def.id === (editingMove.overrideId || editingMove.id))}
             onDelete={handleDeleteCustomMove}
           />
         </div>
@@ -815,7 +863,7 @@
       );
     }
 
-    function MoveEditorModal({ move, isOpen, onClose, onSave, onDelete }) {
+    function MoveEditorModal({ move, isOpen, onClose, onSave, onDelete, originalMove }) {
       const [formData, setFormData] = useState({});
       const [isSaving, setIsSaving] = useState(false);
       const submitMove = async () => {
@@ -879,6 +927,13 @@
               <FrameInput label="ヒット" name="hit" value={formData.hit || ''} onChange={handleFrameChange} />
             </div>
 
+            {originalMove && (
+              <button type="button" onClick={() => setFormData(prev => ({
+                ...prev, name: originalMove.name, moveName: originalMove.moveName || ''
+              }))} className="px-3 py-2 rounded-md border border-slate-600 text-xs text-cyan-300 hover:bg-slate-800">
+                元の表記に戻す
+              </button>
+            )}
             <div className="pt-4 flex justify-between items-center border-t border-slate-800 mt-6">
               {isCustomOrOverride ? (
                 <button onClick={() => onDelete(formData.id)} className="text-red-400 hover:text-red-300 flex items-center text-sm px-2 py-1 rounded hover:bg-red-950/30 transition-colors"><Trash2 size={16} className="mr-1" /> Delete</button>
@@ -1192,6 +1247,8 @@
 
     function CardEditor({ card, moves, db, appId, user, onMove, isFirst, isLast, applyLocalWrite, stageCard }) {
       const [editingBlock, setEditingBlock] = useState(null);
+      const blockDragRef = useRef(null);
+      const [overBlockId, setOverBlockId] = useState(null);
       const initialBlocks = Array.isArray(card.blocks) ? card.blocks : [];
       const [blocks, setBlocks] = useState(initialBlocks);
       const blocksRef = useRef(initialBlocks);
@@ -1260,13 +1317,29 @@
       };
 
       const removeBlock = (blockId) => commitBlocks(previous => previous.filter(block => block.id !== blockId));
-      const moveBlock = (index, direction) => commitBlocks(previous => {
-        const next = [...previous];
-        const target = index + (direction === 'up' ? -1 : 1);
-        if (target < 0 || target >= next.length) return previous;
-        [next[index], next[target]] = [next[target], next[index]];
-        return next;
-      });
+      const beginBlockDrag = (event, blockId) => {
+        blockDragRef.current = blockId;
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('application/x-sf6-block', blockId);
+        event.dataTransfer.setData('text/plain', blockId);
+      };
+      const handleBlockDrop = (event, targetId) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const sourceId = blockDragRef.current || event.dataTransfer.getData('application/x-sf6-block');
+        blockDragRef.current = null;
+        setOverBlockId(null);
+        if (!sourceId || sourceId === targetId) return;
+        commitBlocks(previous => {
+          const ordered = [...previous];
+          const from = ordered.findIndex(block => block.id === sourceId);
+          const to = ordered.findIndex(block => block.id === targetId);
+          if (from < 0 || to < 0) return previous;
+          const [item] = ordered.splice(from, 1);
+          ordered.splice(to, 0, item);
+          return ordered;
+        }, true);
+      };
       const handleSaveCombo = (updatedComboBlock) => {
         // Commit to React state and optimistic overlay synchronously.
         // The cloud write is queued, not awaited by the popup.
@@ -1289,7 +1362,15 @@
             {safeBlocks.map((block, index) => {
               const moveIds = Array.isArray(block.moveIds) ? block.moveIds : [];
               return (
-                <div key={block.id} className="relative group/block flex gap-2">
+                <div key={block.id}
+                  onDragOver={e => { if (blockDragRef.current) { e.preventDefault(); e.stopPropagation(); setOverBlockId(block.id); } }}
+                  onDrop={e => handleBlockDrop(e, block.id)}
+                  className={`relative group/block flex gap-2 rounded ${overBlockId === block.id ? 'drop-block' : ''}`}>
+                  <div draggable onDragStart={e => beginBlockDrag(e, block.id)}
+                    onDragEnd={() => { blockDragRef.current = null; setOverBlockId(null); }}
+                    className="shrink-0 flex items-center cursor-grab active:cursor-grabbing text-slate-500 hover:text-cyan-400" title="ドラッグして順番を変更">
+                    <GripVertical size={16}/>
+                  </div>
                   <div className="flex-1 min-w-0 relative">
                     {block.type === 'text' ? (
                       <AutoExpandingTextarea value={block.content || ''} onChange={e => updateBlock(block.id, { content: e.target.value })} placeholder="Write your notes here..." className="w-full bg-transparent text-slate-200 border-none focus:ring-0 p-2 hover:bg-slate-800/30 focus:bg-slate-800/50 rounded transition-colors text-sm" />
@@ -1309,8 +1390,6 @@
                     )}
                   </div>
                   <div className="flex flex-col space-y-1 opacity-0 group-hover/block:opacity-100 transition-opacity justify-center shrink-0">
-                    <button onClick={() => moveBlock(index, 'up')} disabled={index === 0} className="p-1 text-slate-500 hover:text-cyan-400 hover:bg-slate-800 rounded disabled:opacity-20"><ChevronUp size={16} /></button>
-                    <button onClick={() => moveBlock(index, 'down')} disabled={index === safeBlocks.length - 1} className="p-1 text-slate-500 hover:text-cyan-400 hover:bg-slate-800 rounded disabled:opacity-20"><ChevronDown size={16} /></button>
                     <button onClick={() => removeBlock(block.id)} className="p-1 text-slate-500 hover:text-red-400 hover:bg-slate-800 rounded"><X size={16} /></button>
                   </div>
                 </div>
